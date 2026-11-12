@@ -11,10 +11,10 @@ TYPES = {'invoice': 'חשבונית מס', 'tax_receipt': 'חשבונית מס־
          'credit': 'זיכוי', 'receipt': 'קבלה', 'proforma': 'חשבון עסקה', 'delivery': 'תעודת משלוח'}
 FIELDS = ['supplier_name', 'supplier_tax_id', 'recipient_tax_id', 'number', 'date',
           'due_date', 'net', 'vat', 'total', 'currency', 'allocation', 'delivery_refs',
-          'expense_account', 'notes', 'kind']
+          'expense_account', 'notes', 'kind', 'purpose', 'transaction_type', 'vat_account', 'cost_center', 'project']
 EXPORT_FIELDS = ['supplier_code', 'supplier_name', 'supplier_tax_id', 'kind', 'number',
                  'date', 'due_date', 'net', 'vat', 'total', 'currency', 'allocation',
-                 'checks', 'delivery_refs', 'expense_account', 'notes']
+                 'checks', 'delivery_refs', 'expense_account', 'notes', 'purpose', 'transaction_type', 'vat_account', 'cost_center', 'project', 'reference', 'document_id', 'company_code']
 
 def money(value):
     try:
@@ -31,6 +31,10 @@ def issues(fields, supplier, checks, company):
     out = []
     if fields.get('kind') not in {'invoice', 'tax_receipt', 'credit'}:
         out.append('סוג המסמך מיועד להתאמה או לארכיון, ולא ליצוא חשבוניות')
+    if fields.get('purpose') in ('archive','reconciliation'): out.append('יעד המסמך הוא התאמה או ארכיון; אין לייצא אותו כתנועה')
+    if fields.get('purpose') == 'journal':
+        if not fields.get('expense_account'): out.append('פקודת יומן מחייבת כרטיס הוצאה')
+        if fields.get('vat') not in ('', '0', '0.00') and not fields.get('vat_account'): out.append('פקודת יומן עם מע״מ מחייבת כרטיס מע״מ')
     if not fields.get('number', '').strip(): out.append('חסר מספר מסמך')
     try: date.fromisoformat(fields.get('date', ''))
     except (ValueError, TypeError): out.append('תאריך המסמך חסר או לא תקין')
@@ -58,7 +62,7 @@ def issues(fields, supplier, checks, company):
 def extract(text):
     """Conservative local suggestions; never approves a document or invents amounts."""
     result = dict.fromkeys(FIELDS, '')
-    result.update(currency='ILS', kind='invoice')
+    result.update(currency='ILS', kind='invoice', purpose='supplier_invoice')
     if 'זיכוי' in text: result['kind'] = 'credit'
     elif 'תעודת משלוח' in text: result['kind'] = 'delivery'
     elif 'חשבון עסקה' in text: result['kind'] = 'proforma'

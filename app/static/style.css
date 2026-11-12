@@ -7,3 +7,4 @@
 @media(max-width:760px){.review-body{height:auto;max-height:65vh;overflow:auto}.editor,.document-preview{overflow:visible}}
 .check-row:has([data-show-check]){grid-template-columns:1fr auto auto auto}
 .check-preview{display:block;max-width:100%;max-height:200px;min-height:60px;object-fit:contain;background:white;border:1px solid var(--line)}
+.toolbar select{width:auto;max-width:200px}.review-advanced-actions{flex-wrap:wrap;gap:6px;margin-bottom:12px}.review-advanced-actions button{font-size:11px}.items-table input{min-width:75px}.items-table input[data-line-field=description]{min-width:160px}.canvas-wrap[data-editing=true] .selection.saved{pointer-events:auto;cursor:move}.canvas-wrap[data-editing=true] .selection.saved::after{content:'';position:absolute;right:-4px;bottom:-4px;width:14px;height:14px;background:var(--green);cursor:nwse-resize}

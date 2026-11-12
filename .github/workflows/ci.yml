@@ -7,7 +7,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-24.04, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -27,6 +27,7 @@ jobs:
           choco install tesseract --yes --no-progress
           "$env:ProgramFiles\Tesseract-OCR" >> $env:GITHUB_PATH
       - run: python scripts/setup_ocr.py
+      - run: python scripts/setup_digits.py
       - run: python -m playwright install --with-deps chromium
       - run: python -m pytest -q
       - name: Build Windows source bundle

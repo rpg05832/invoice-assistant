@@ -9,7 +9,8 @@ import tempfile
 import threading
 import uuid
 import zipfile
-from contextlib import contextmanager
+from contextlib import contextmanager, closing
+from starlette.background import BackgroundTask
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -22,7 +23,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from openpyxl import Workbook, load_workbook
 from PIL import Image, ImageOps
 
-from . import ocr
+from . import ocr, vision, advanced
 from .domain import TARGETS, TYPES, FIELDS, EXPORT_FIELDS, extract, issues, money, safe_cell
 
 def uid(): return uuid.uuid4().hex
@@ -63,6 +64,7 @@ def create_app(data_dir=None):
         CREATE TABLE IF NOT EXISTS profiles(company_id TEXT PRIMARY KEY REFERENCES companies(id),settings TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS deliveries(id TEXT PRIMARY KEY,company_id TEXT NOT NULL REFERENCES companies(id),supplier_code TEXT NOT NULL,number TEXT NOT NULL,UNIQUE(company_id,supplier_code,number));
         ''')
+        advanced.initialize(c)
 
     app = FastAPI(title='Invoice Assistant', version='0.1.0')
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=['127.0.0.1', 'localhost', '[::1]', 'testserver'])
@@ -85,7 +87,7 @@ def create_app(data_dir=None):
     def company(c, company_id):
         row = c.execute('SELECT * FROM companies WHERE id=?', (company_id,)).fetchone()
         if not row: fail('החברה לא נמצאה', 404)
-        return dict(row)
+        return {**dict(row),**advanced.company_meta(c,company_id)}
 
     def document(c, document_id, company_id=None):
         row = c.execute('SELECT d.*,s.name AS source_name FROM documents d JOIN sources s ON s.id=d.source_id WHERE d.id=?', (document_id,)).fetchone()
@@ -103,6 +105,7 @@ def create_app(data_dir=None):
 
     def doc_issues(c, d):
         result = issues(d['fields'], supplier_for(c, d), d['checks'], company(c, d['company_id']))
+        result.extend(advanced.extra_issues(c,d))
         f = d['fields']
         if d['supplier_id'] and f.get('number'):
             selected = supplier_for(c, d)
@@ -115,6 +118,7 @@ def create_app(data_dir=None):
         return result
 
     def describe(c, d):
+        advanced.enrich(c, d)
         d['issues'] = doc_issues(c, d)
         d['supplier'] = supplier_for(c, d)
         return d
@@ -128,11 +132,14 @@ def create_app(data_dir=None):
             if row: return row['supplier_id']
         return None
 
-    def insert_document(c, company_id, source_id, page, image_path, text, engine, warning, region=None, parent_id=None):
+    def insert_document(c, company_id, source_id, page, image_path, text, engine, warning, region=None, parent_id=None, tokens=None):
         doc_id = uid(); fields = extract(text)
+        original_fields = dict(fields)
         supplier_id = match_supplier(c, company_id, fields)
+        fields.update(advanced.defaults_for(c, company_id, supplier_id, fields['kind']))
         c.execute('INSERT INTO documents(id,company_id,source_id,page,image,region,fields,original_fields,ocr_text,engine,warning,supplier_id,created,parent_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                  (doc_id, company_id, source_id, page, str(image_path.relative_to(data)), encode(region) if region else None, encode(fields), encode(fields), text, engine, warning, supplier_id, now(), parent_id))
+                  (doc_id, company_id, source_id, page, image_path.relative_to(data).as_posix(), encode(region) if region else None, encode(fields), encode(original_fields), text, engine, warning, supplier_id, now(), parent_id))
+        advanced.save_meta(c, doc_id, {'tokens':tokens or [],'field_sources':vision.field_sources(original_fields,tokens or []),'field_engines':{key:engine for key,value in original_fields.items() if value}})
         audit(c, company_id, doc_id, 'created', {'engine': engine, 'page': page})
         return doc_id
 
@@ -147,7 +154,7 @@ def create_app(data_dir=None):
 
     @app.get('/api/companies')
     def companies():
-        with db() as c: return [dict(r) for r in c.execute('SELECT * FROM companies ORDER BY created')]
+        with db() as c: return [company(c,r['id']) for r in c.execute('SELECT * FROM companies ORDER BY created')]
 
     @app.post('/api/companies')
     def add_company(payload: dict = Body(...)):
@@ -160,6 +167,7 @@ def create_app(data_dir=None):
         with db() as c:
             company_id = uid()
             c.execute('INSERT INTO companies VALUES(?,?,?,?,?)', (company_id, name, tax_id, target, now()))
+            advanced.save_company_meta(c,company_id,{'code':str(payload.get('code',''))[:100]})
             return company(c, company_id)
 
     @app.get('/api/companies/{company_id}/suppliers')
@@ -171,10 +179,11 @@ def create_app(data_dir=None):
     def save_supplier(c, company_id, p):
         code, name = str(p.get('code', '')).strip(), str(p.get('name', '')).strip()
         if not code or not name or max(len(code), len(name)) > 200: fail('חסרים קוד ושם ספק או שהם ארוכים מדי')
-        tax_id = str(p.get('tax_id', '')).strip()
+        existing=c.execute('SELECT * FROM suppliers WHERE company_id=? AND code=?',(company_id,code)).fetchone()
+        tax_id = str(p.get('tax_id', existing['tax_id'] if existing else '')).strip()
         if tax_id and not re.fullmatch(r'\d{9}', tax_id): fail('מספר עוסק ספק צריך להכיל 9 ספרות')
         c.execute('INSERT INTO suppliers(id,company_id,code,name,tax_id,active,expense_account) VALUES(?,?,?,?,?,?,?) ON CONFLICT(company_id,code) DO UPDATE SET name=excluded.name,tax_id=excluded.tax_id,active=excluded.active,expense_account=excluded.expense_account',
-                  (uid(), company_id, code, name, tax_id, 0 if p.get('active') in (False, '0', 'לא') else 1, str(p.get('expense_account', ''))[:200]))
+                  (uid(), company_id, code, name, tax_id, existing['active'] if existing and p.get('active') in (None,'') else 0 if str(p.get('active','1')).strip().casefold() in ('false','0','לא','inactive','no') else 1, str(p.get('expense_account',existing['expense_account'] if existing else ''))[:200]))
         return dict(c.execute('SELECT * FROM suppliers WHERE company_id=? AND code=?', (company_id, code)).fetchone())
 
     @app.post('/api/companies/{company_id}/suppliers')
@@ -267,7 +276,8 @@ def create_app(data_dir=None):
                         text = page.get_text().strip()
                         if len(text) >= 20: engine, warning = 'pdf-text', ''
                         else: text, engine, warning = ocr.recognize(path)
-                        pages.append((index+1, path, text, engine, warning))
+                        words = vision.pdf_tokens(page) if engine == 'pdf-text' else vision.tokens(path)
+                        pages.append((index+1, path, text, engine, warning, words, {'items':vision.pdf_items(page),'processing':{'pdf_rotation':page.rotation}}))
             else:
                 with Image.open(io.BytesIO(content)) as img:
                     if img.format not in ('JPEG', 'PNG', 'TIFF', 'WEBP'): fail('פורמט תמונה לא נתמך')
@@ -277,12 +287,28 @@ def create_app(data_dir=None):
                         if img.width * img.height > 40_000_000: fail('התמונה גדולה מדי')
                         path = source_dir / f'page-{index+1}.png'
                         ImageOps.exif_transpose(img.copy()).convert('RGB').save(path)
+                        prepared = source_dir / f'prepared-{index+1}.png'
+                        processing=vision.preprocess(path, prepared)
+                        prepared.replace(path)
                         text, engine, warning = ocr.recognize(path)
-                        pages.append((index+1, path, text, engine, warning))
+                        pages.append((index+1, path, text, engine, warning, vision.tokens(path), {'processing':processing}))
             with db() as c:
-                c.execute('INSERT INTO sources VALUES(?,?,?,?,?,?)', (source_id, company_id, (file.filename or 'document')[:250], str(original.relative_to(data)), sha, now()))
-                ids = [insert_document(c, company_id, source_id, *page) for page in pages]
-                return {'ids': ids, 'pages': len(ids)}
+                c.execute('INSERT INTO sources VALUES(?,?,?,?,?,?)', (source_id, company_id, (file.filename or 'document')[:250], original.relative_to(data).as_posix(), sha, now()))
+                ids=[]
+                for number,path,text,engine,warning,words,extra in pages:
+                    ident=insert_document(c,company_id,source_id,number,path,text,engine,warning,tokens=words)
+                    advanced.save_meta(c,ident,extra);ids.append(ident)
+                from .cloud import settings as recognition_settings
+                config=recognition_settings(c,company_id)
+                failures=[ident for ident in ids if document(c,ident)['engine'] in ('failed','unavailable') or all(not document(c,ident)['fields'].get(key) for key in ('number','date','total'))]
+            proposals=[]
+            if config.get('mode')=='on_failure':
+                for ident in failures:
+                    try:
+                        proposal=app.state.additional_recognize(ident,{'trigger':'failure','local_failed':True,'action':'document'})
+                        proposals.append({'document_id':ident,'run_id':proposal['id']})
+                    except HTTPException:pass
+            return {'ids':ids,'pages':len(ids),'additional_proposals':proposals}
         except Exception as exc:
             import shutil
             shutil.rmtree(source_dir, ignore_errors=True)
@@ -326,11 +352,13 @@ def create_app(data_dir=None):
                 if not isinstance(number, str) or len(number) > 30: fail('מספר צ׳ק צריך להישמר כטקסט')
                 region = check.get('region')
                 if region is not None: validate_region(region)
-                clean_checks.append({'number': number.strip(), 'confirmed': check.get('confirmed') is True, 'region': region, 'engine': str(check.get('engine', 'manual'))[:100], 'source_id': d['source_id'], 'page': d['page']})
+                origin = advanced.source_document(c,d,check.get('source_document_id'))
+                clean_checks.append({'number': number.strip(), 'confirmed': check.get('confirmed') is True, 'region': region, 'engine': str(check.get('engine', 'manual'))[:100], 'source_document_id':origin['id'], 'source_id': origin['source_id'], 'page': origin['page'], 'proposals':check.get('proposals',[])[:5] if isinstance(check.get('proposals',[]),list) else []})
             c.execute("UPDATE documents SET fields=?,supplier_id=?,checks=?,status='review',revision=revision+1 WHERE id=?", (encode(f), supplier_id, encode(clean_checks), doc_id))
             if payload.get('remember') and supplier_id and f.get('supplier_name'):
                 c.execute('INSERT INTO aliases VALUES(?,?,?) ON CONFLICT(company_id,alias) DO UPDATE SET supplier_id=excluded.supplier_id', (d['company_id'], f['supplier_name'].casefold(), supplier_id))
             audit(c, d['company_id'], doc_id, 'edited', {'before': d['fields'], 'after': f, 'checks_before': d['checks'], 'checks_after': clean_checks, 'supplier_before': d['supplier_id'], 'supplier_after': supplier_id, 'revision': d['revision'] + 1})
+            advanced.update_extra(c, d, payload, f, supplier_id)
             return describe(c, document(c, doc_id))
 
     def editable(d):
@@ -358,12 +386,14 @@ def create_app(data_dir=None):
         region = payload.get('region'); validate_region(region)
         with db() as c:
             d = document(c, doc_id); editable(d)
+            source_doc = advanced.source_document(c, d, payload.get('source_document_id'))
             with tempfile.TemporaryDirectory() as temp:
-                path = Path(temp) / 'check.png'; crop(d, region, path)
+                path = Path(temp) / 'check.png'; crop(source_doc, region, path)
                 text, engine, warning = ocr.recognize(path, digits=True)
+                independent = vision.digit_proposal(path)
             # Keep uncertainty visible: multiple runs of digits are never concatenated.
             candidates = re.findall(r'[0-9]{1,30}', text)
-            return {'number': candidates[0] if len(candidates) == 1 else '', 'candidates': candidates, 'confirmed': False, 'region': region, 'engine': engine, 'warning': warning}
+            return {'number': candidates[0] if len(candidates) == 1 else '', 'candidates': candidates, 'confirmed': False, 'region': region, 'source_document_id':source_doc['id'], 'engine': engine, 'warning': warning, 'proposals':[{'engine':engine,'number':candidates[0] if len(candidates)==1 else ''},independent]}
 
     @app.get('/api/documents/{doc_id}/region-image')
     def region_image(doc_id: str, x: float, y: float, w: float, h: float, rotation: int = 0):
@@ -384,12 +414,13 @@ def create_app(data_dir=None):
         try:
             with db() as c:
                 d = document(c, doc_id); editable(d)
+                if c.execute('SELECT 1 FROM document_links WHERE primary_id=?',(doc_id,)).fetchone():fail('יש לפרק את חיבור עמודי ההמשך לפני פיצול העמוד')
                 ids = []
                 for region in regions:
                     path = files / d['source_id'] / f'crop-{uid()}.png'; created.append(path)
                     crop(d, region, path)
                     text, engine, warning = ocr.recognize(path)
-                    ids.append(insert_document(c, d['company_id'], d['source_id'], d['page'], path, text, engine, warning, region, doc_id))
+                    ids.append(insert_document(c, d['company_id'], d['source_id'], d['page'], path, text, engine, warning, region, doc_id, tokens=vision.tokens(path)))
                 c.execute("UPDATE documents SET status='archived',revision=revision+1 WHERE id=?", (doc_id,))
                 audit(c, d['company_id'], doc_id, 'split', {'regions': regions, 'children': ids})
                 return {'ids': ids}
@@ -451,16 +482,19 @@ def create_app(data_dir=None):
             if type(limit) is not int or not 0 <= limit <= 4000: fail('אורך שדה לא תקין')
         if payload.get('delimiter') not in (',', ';', '\t') or payload.get('encoding') not in ('utf-8-sig', 'cp1255') or payload.get('date_format') not in ('%Y-%m-%d', '%d/%m/%Y', '%d%m%Y'): fail('פורמט יצוא לא נתמך')
         clean = {k: payload[k] for k in ('columns', 'delimiter', 'encoding', 'date_format')}
+        from .integrations import profile_options
+        clean.update(profile_options(payload))
         with db() as c:
             company(c, company_id)
             c.execute('INSERT INTO profiles VALUES(?,?) ON CONFLICT(company_id) DO UPDATE SET settings=excluded.settings', (company_id, encode(clean)))
+            c.execute('DELETE FROM verification WHERE company_id=?',(company_id,))
             audit(c, company_id, None, 'profile_saved', clean)
         return clean
 
     def export_row(c, d):
         supplier = supplier_for(c, d)
         row = dict(d['fields'])
-        row.update(supplier_code=supplier['code'], checks=';'.join(ch['number'] for ch in d['checks']))
+        row.update(supplier_code=supplier['code'], checks=';'.join(ch['number'] for ch in d['checks']),document_id=d['id'],company_code=company(c,d['company_id']).get('code',''))
         for k in ('net', 'vat', 'total'): row[k] = str(money(row[k]).quantize(Decimal('.01')))
         return row
 
@@ -496,7 +530,19 @@ def create_app(data_dir=None):
             if d['status'] != 'approved': fail('אפשר לייצא רק מסמכים מאושרים שטרם יוצאו', 409)
             found = doc_issues(c, d)
             if found: fail({d['id']: found}, 422)
-        snapshot = {'profile': profile(c, company_id), 'items': [{'document_id': d['id'], 'row': export_row(c, d), 'checks': d['checks'], 'revision': d['revision']} for d in docs], 'verified': False}
+        settings=profile(c, company_id)
+        from .integrations import journal, fixed_bytes
+        items=[]
+        for d in docs:
+            row=export_row(c,d);meta=advanced.meta(c,d['id'])
+            if settings.get('check_policy')=='single' and len(d['checks'])>1:fail('הפרופיל מקבל מספר צ׳ק אחד. יש לבחור במפורש כיצד לטפל בכמה צ׳קים לפני יצוא')
+            if settings.get('check_policy')=='first':row['checks']=d['checks'][0]['number'] if d['checks'] else ''
+            row['reference']=row['checks']
+            if settings.get('check_mapping')=='notes':row['notes']=(row.get('notes','')+' צ׳קים: '+row['checks']).strip();row['reference']=''
+            if settings.get('check_mapping')=='payment' and not meta.get('payment'):fail('מיפוי לצ׳ק בתנועת תשלום מחייב יצירה ואישור מפורשים של פרטי תשלום')
+            items.append({'document_id':d['id'],'row':row,'checks':d['checks'],'revision':d['revision'],'items':meta.get('items',[]),'payment':meta.get('payment'),'journal':journal(row,meta.get('payment')),'pages':[d['id']]+[r[0] for r in c.execute('SELECT child_id FROM document_links WHERE primary_id=?',(d['id'],))]})
+        snapshot = {'profile':settings,'items':items,'verified':False}
+        if settings.get('format')=='fixed':fixed_bytes(snapshot)
         csv_bytes(snapshot)  # Validate all lengths and encoding before changing any status.
         return docs, snapshot
 
@@ -527,6 +573,10 @@ def create_app(data_dir=None):
     @app.get('/api/batches/{batch_id}/download')
     def download_batch(batch_id: str, format: str = 'xlsx'):
         with db() as c: snapshot = batch_details(c, batch_id)['snapshot']
+        if format in ('zip','fixed','json'):
+            from .integrations import archive_bytes, fixed_bytes
+            content=archive_bytes(snapshot,csv_bytes) if format=='zip' else fixed_bytes(snapshot) if format=='fixed' else encode(snapshot).encode('utf-8')
+            return Response(content,media_type='application/zip' if format=='zip' else 'application/json' if format=='json' else 'text/plain',headers={'Content-Disposition':f'attachment; filename="batch-{batch_id}.{format if format!="fixed" else "txt"}"'})
         if format == 'csv':
             return Response(csv_bytes(snapshot), media_type='text/csv', headers={'Content-Disposition': f'attachment; filename="batch-{batch_id}.csv"'})
         if format != 'xlsx': fail('פורמט לא נתמך')
@@ -536,8 +586,13 @@ def create_app(data_dir=None):
         checks = book.create_sheet('צ׳קים'); checks.append(['document_id', 'number', 'confirmed', 'region'])
         for item in snapshot['items']:
             for ch in item['checks']: checks.append([item['document_id'], safe_cell(ch['number']), ch['confirmed'], encode(ch.get('region'))])
-        lines = book.create_sheet('שורות'); lines.append(['document_id', 'description', 'quantity', 'price', 'total'])
-        exceptions = book.create_sheet('חריגים'); exceptions.append(['הערה']); exceptions.append(['יצוא כללי; הקליטה בתוכנת היעד לא אומתה. שורות פריטים אינן מחולצות בגרסה זו.'])
+        lines = book.create_sheet('שורות'); lines.append(['document_id', 'description', 'quantity', 'price', 'discount', 'total','item_code'])
+        for item in snapshot['items']:
+            for line in item.get('items',[]):lines.append([item['document_id']]+[safe_cell(line.get(k,'')) for k in ('description','quantity','price','discount','total','item_code')])
+        ledger=book.create_sheet('פקודות יומן');ledger.append(['document_id','account','debit','credit','reference','reference2'])
+        for item in snapshot['items']:
+            for entry in item.get('journal',[]):ledger.append([item['document_id']]+[safe_cell(entry.get(k,'')) for k in ('account','debit','credit','reference','reference2')])
+        exceptions = book.create_sheet('חריגים'); exceptions.append(['הערה']); exceptions.append(['בדקו אימות פרופיל וקליטה בחברת בדיקה לפני שימוש בתוכנת היעד.'])
         for ws in book:
             ws.sheet_view.rightToLeft = True; ws.freeze_panes = 'A2'; ws.auto_filter.ref = ws.dimensions
             for column in ws.columns:
@@ -596,20 +651,24 @@ def create_app(data_dir=None):
 
     @app.get('/api/backup')
     def backup():
-        with tempfile.TemporaryDirectory() as temp:
-            target = Path(temp) / 'invoices.sqlite3'
+        temp = tempfile.TemporaryDirectory()
+        try:
+            target = Path(temp.name) / 'invoices.sqlite3'
             # Take the SQLite snapshot and its referenced files while mutations are locked.
             with db() as c:
-                with sqlite3.connect(target) as destination:
-                    with sqlite3.connect(database) as source: source.backup(destination)
-                referenced = {r[0] for r in c.execute('SELECT path FROM sources')} | {r[0] for r in c.execute('SELECT image FROM documents')}
+                with closing(sqlite3.connect(target)) as destination:
+                    with closing(sqlite3.connect(database)) as source: source.backup(destination)
+                referenced = {r[0].replace('\\','/') for r in c.execute('SELECT path FROM sources')} | {r[0].replace('\\','/') for r in c.execute('SELECT image FROM documents')}
                 for r in c.execute('SELECT source_id,page FROM documents'):
                     referenced.add(f'files/{r[0]}/page-{r[1]}.png')
-                out = io.BytesIO()
+                out = Path(temp.name) / 'backup.zip'
                 with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as archive:
                     archive.write(target, 'invoices.sqlite3')
                     for relative in sorted(referenced): archive.write(data / relative, relative)
-            return Response(out.getvalue(), media_type='application/zip', headers={'Content-Disposition': 'attachment; filename="invoice-assistant-backup.zip"'})
+            return FileResponse(out,media_type='application/zip',filename='invoice-assistant-backup.zip',background=BackgroundTask(temp.cleanup))
+        except Exception:
+            temp.cleanup()
+            raise
 
     static = Path(__file__).parent / 'static'
     app.mount('/static', StaticFiles(directory=static), name='static')
@@ -617,6 +676,7 @@ def create_app(data_dir=None):
     @app.get('/')
     def index(): return FileResponse(static / 'index.html')
 
+    advanced.register(app, {**locals(),'TARGETS':TARGETS,'EXPORT_FIELDS':EXPORT_FIELDS})
     return app
 
 app = create_app()

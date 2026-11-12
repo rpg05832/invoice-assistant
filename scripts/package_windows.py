@@ -12,15 +12,18 @@ from setup_ocr import MODELS, main as install_models
 
 def main():
     install_models()
+    from setup_digits import main as install_digits
+    install_digits()
     output = ROOT / 'dist' / 'invoice-assistant-0.1.0-windows-source.zip'
     output.parent.mkdir(exist_ok=True)
     tracked = subprocess.check_output(['git', '-C', str(ROOT), 'ls-files', '-z']).decode().split('\0')
     paths = [Path(p) for p in tracked if p and not p.startswith(('.github/', 'tests/'))]
     if not paths: raise RuntimeError('Stage or commit source files before packaging')
+    paths += [Path('data/models/mnist-12.onnx')]
     paths += [Path('data/tessdata') / f'{lang}.traineddata' for lang in MODELS]
     with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as z:
         for relative in sorted(paths):
-            if relative.parts[0] in ('.git', '.venv', '.env') or ('data' in relative.parts and relative.parts[:2] != ('data', 'tessdata')):
+            if relative.parts[0] in ('.git', '.venv', '.env') or ('data' in relative.parts and relative.parts[:2] not in (('data', 'tessdata'),('data','models'))):
                 raise RuntimeError(f'Unexpected package path: {relative}')
             z.write(ROOT / relative, Path('invoice-assistant') / relative)
     print(output)
