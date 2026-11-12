@@ -1,0 +1,41 @@
+name: Validate local invoice workflow
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  acceptance:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - run: python -m pip install -r requirements.lock
+      - name: Install Tesseract on Linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y tesseract-ocr
+      - name: Install Tesseract on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install tesseract --yes --no-progress
+          "$env:ProgramFiles\Tesseract-OCR" >> $env:GITHUB_PATH
+      - run: python scripts/setup_ocr.py
+      - run: python -m playwright install --with-deps chromium
+      - run: python -m pytest -q
+      - name: Build Windows source bundle
+        if: runner.os == 'Windows'
+        run: python scripts/package_windows.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-${{ matrix.os }}
+          path: |
+            test-results/
+            dist/*.zip
