@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#153e36"><title>חשבונית · סביבת עבודה</title><link rel="stylesheet" href="/static/style.css"><script src="/static/app.js" defer></script><script src="/static/advanced.js" defer></script><script src="/static/learning.js" defer></script><script src="/static/learning_transfer.js" defer></script><script src="/static/fast_review.js" defer></script><script src="/static/review_tools.js" defer></script><script src="/static/model_guide.js" defer></script></head>
+<body>
+<aside class="sidebar">
+ <a class="brand" href="/"><span class="brand-mark">ח</span><div>חשבונית<span>סביבת העבודה שלך</span></div></a>
+ <div class="company-block"><label for="company">החברה הפעילה</label><select id="company" aria-label="בחירת חברה"></select><button id="new-company" class="text-button">＋ הוספת חברה</button></div>
+ <nav aria-label="ניווט ראשי">
+  <button class="nav-item active" data-view="documents"><span>▤</span> מסמכים <small id="nav-count">0</small></button>
+  <button class="nav-item" data-view="suppliers"><span>♧</span> ספקים וכרטיסים</button>
+  <button class="nav-item" data-view="batches"><span>↗</span> מנות יצוא</button>
+  <button class="nav-item" data-view="deliveries"><span>▱</span> תעודות משלוח</button>
+  <button class="nav-item" data-view="settings"><span>⚙</span> הגדרות ויבוא</button>
+  <button class="nav-item" data-view="audit"><span>◷</span> היסטוריית פעולות</button>
+ </nav>
+ <div class="sidebar-bottom"><span class="local-dot"></span> הנתונים נשמרים במחשב שלך<p>גרסה ראשונה · 0.1</p></div>
+</aside>
+<main>
+ <header class="topbar"><div><span class="breadcrumb">סביבת עבודה</span><span class="separator">/</span><span id="breadcrumb-title">מסמכים</span></div><div class="topbar-status"><span class="local-dot"></span> עבודה מקומית <span class="avatar">מ</span></div></header>
+ <section class="page">
+  <div class="page-heading"><div><div class="eyebrow">פחות הקלדה. יותר סדר.</div><h1 id="page-title">המסמכים שלך</h1><p id="page-description">מהמסמך המקורי ועד קובץ מוכן לבדיקה — במקום אחד.</p></div><div class="heading-actions"><button id="upload-button" class="primary">＋ העלאת מסמכים</button><input id="upload-input" type="file" accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff,.webp" multiple hidden></div></div>
+  <div id="capability-note" class="notice" hidden></div>
+  <div id="view"></div>
+  <footer class="page-footer"><span>חשבונית · כלי עזר למנהלי חשבונות</span><span>אישור אנושי לפני יצוא. מעקב נפרד אחרי קליטה.</span></footer>
+ </section>
+</main>
+<dialog id="modal"><div id="modal-content"></div></dialog>
+<div id="toast" role="status" aria-live="polite" hidden></div>
+<div id="busy" hidden><div class="busy-card"><div class="spinner"></div><strong id="busy-text">מעבד את המסמכים…</strong><span>אפשר להמתין כאן. הקבצים נשמרים מקומית.</span></div></div>
+</body></html>
+

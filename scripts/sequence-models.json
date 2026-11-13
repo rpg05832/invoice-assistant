@@ -1,0 +1,20 @@
+{
+  "paddle-v5": {
+    "repo": "PaddlePaddle/en_PP-OCRv5_mobile_rec_onnx",
+    "revision": "3fafbc3b5dcf93dd72add9f48368be8a3a2cd33b",
+    "directory": "paddle-digits",
+    "files": {
+      "inference.onnx": "b5f833dfc5d0eb71da397b4efa06ebeee9b431b690a47d6af40d77d8eabc557f",
+      "inference.yml": "27e91d0582f40168aa218303c76e184bc78fa7a5d105aad0cfbad8458b441067"
+    }
+  },
+  "paddle-v6-small": {
+    "repo": "PaddlePaddle/PP-OCRv6_small_rec_onnx",
+    "revision": "b8f84f0b80c529de40b4fbb3544b84fa7233a513",
+    "directory": "PP-OCRv6_small_rec_onnx",
+    "files": {
+      "inference.onnx": "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634",
+      "inference.yml": "ab078671bb49f06228eadccd34f1bb501e157f7a047095ffb943ba81512c77d1"
+    }
+  }
+}
