@@ -6,10 +6,11 @@ from PIL import Image, ImageOps
 from .paths import assets
 
 def language_args(quality='fast'):
-    bundled = assets() / ('tessdata_best' if quality=='best' else 'tessdata')
-    configured = os.environ.get('INVOICE_TESSDATA_DIR') if quality!='best' else None
+    bundled = assets() / ({'best':'tessdata_best','rivok':'tessdata_rivok'}.get(quality,'tessdata'))
+    configured = os.environ.get('INVOICE_TESSDATA_DIR') if quality=='fast' else None
     directory = Path(configured) if configured else bundled
-    return ['--tessdata-dir', str(directory)] if (directory / 'heb.traineddata').exists() else []
+    required='heb_rivok.traineddata' if quality=='rivok' else 'heb.traineddata'
+    return ['--tessdata-dir', str(directory)] if (directory / required).exists() else []
 
 def capabilities(quality='fast'):
     binary = shutil.which('tesseract')
@@ -17,14 +18,14 @@ def capabilities(quality='fast'):
     try:
         run = subprocess.run([binary, *language_args(quality), '--list-langs'], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
         langs = [s.strip() for s in run.stdout.splitlines()[1:] if s.strip()]
-        return {'available': run.returncode == 0, 'languages': langs, 'hebrew': 'heb' in langs}
+        return {'available': run.returncode == 0, 'languages': langs, 'hebrew': bool({'heb','heb_rivok'}&set(langs))}
     except (OSError, subprocess.TimeoutExpired):
         return {'available': False, 'languages': [], 'hebrew': False}
 
 def recognize(path, digits=False, quality='fast'):
     cap = capabilities(quality)
     if not cap['available']: return '', 'unavailable', 'מנוע OCR אינו מותקן; אפשר להזין שדות ידנית'
-    langs = '+'.join(x for x in ('heb', 'eng') if x in cap['languages'])
+    langs = 'heb_rivok' if quality=='rivok' and 'heb_rivok' in cap['languages'] else '+'.join(x for x in ('heb', 'eng') if x in cap['languages'])
     if not langs: return '', 'unavailable', 'לא מותקנות שפות עברית או אנגלית'
     command = ['tesseract', str(path), 'stdout', *language_args(quality), '-l', langs, '--psm', '6' if digits else '3']
     if digits: command += ['-c', 'tessedit_char_whitelist=0123456789']

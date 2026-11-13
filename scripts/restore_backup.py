@@ -34,6 +34,9 @@ def restore(archive, target):
             if conn.execute('PRAGMA integrity_check').fetchone()[0] != 'ok': raise ValueError('Invalid database')
             if conn.execute('PRAGMA foreign_key_check').fetchall(): raise ValueError('Broken database references')
             paths = {r[0] for r in conn.execute('SELECT path FROM sources')} | {r[0] for r in conn.execute('SELECT image FROM documents')}
+            tables={r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if 'learning_examples' in tables:paths.update(r[0] for r in conn.execute('SELECT image FROM learning_examples'))
+            if 'learning_models' in tables:paths.update(r[0] for r in conn.execute('SELECT path FROM learning_models'))
             for relative in paths:
                 path = (staging / relative).resolve()
                 if not path.is_relative_to(staging) or not path.is_file(): raise ValueError('Missing or unsafe source file')

@@ -86,7 +86,8 @@ def provider_call(config,key,image):
             endpoint='http://127.0.0.1:8090' if provider=='local_digits' else config.get('local_endpoint','http://127.0.0.1:8089').rstrip('/')
             if endpoint not in ('http://127.0.0.1:8089','http://localhost:8089','http://127.0.0.1:8090'):fail('מודל תמונה מקומי חייב להאזין ב־loopback בפורט 8089')
             if provider=='local_digits':prompt={'glm-ocr':'Text Recognition:','paddle-vl16':'OCR:','lighton':''}.get(model,prompt)
-            response=client.post(endpoint+'/v1/chat/completions',json={'model':model,'max_tokens':2048,'temperature':0,'chat_template_kwargs':{'enable_thinking':False},'messages':[{'role':'user','content':[{'type':'text','text':prompt},{'type':'image_url','image_url':{'url':data_url}}]}]});response.raise_for_status();raw=response.json()['choices'][0]['message']['content']
+            from .model_runtime import local_headers
+            response=client.post(endpoint+'/v1/chat/completions',headers=local_headers(8090 if provider=='local_digits' else 8089),json={'model':model,'max_tokens':2048,'temperature':0,'chat_template_kwargs':{'enable_thinking':False},'messages':[{'role':'user','content':[{'type':'text','text':prompt},{'type':'image_url','image_url':{'url':data_url}}]}]});response.raise_for_status();raw=response.json()['choices'][0]['message']['content']
     parsed=response_fields(raw)
     if provider=='local_digits':parsed.update(fields={},items=[])
     return parsed

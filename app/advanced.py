@@ -179,6 +179,7 @@ def register(app,s):
         return {'hardware':{'architecture':platform.machine(),'logical_cpus':os.cpu_count(),'gpu_required':False},'engines':[
             {'id':'tesseract-fast','installed':ocr.capabilities()['hebrew'],'hebrew':True,'role':'Hebrew + English printed OCR'},
             {'id':'tesseract-best','installed':(assets/'tessdata_best/heb.traineddata').is_file(),'hebrew':True,'role':'Optional full precision printed OCR'},
+            {'id':'tesseract-rivok','installed':(assets/'tessdata_rivok/heb_rivok.traineddata').is_file(),'hebrew':True,'role':'Optional compact Hebrew, English and digit model'},
             {'id':'paddle-v5','installed':(models/'paddle-digits/inference.onnx').is_file(),'hebrew':False,'digits_only':True,'role':'Whole numeral sequence proposals; English model restricted to digit crops'},
             {'id':'paddle-v6-small','installed':(models/'PP-OCRv6_small_rec_onnx/inference.onnx').is_file(),'hebrew':False,'digits_only':True,'role':'Small CPU sequence model; no Hebrew alphabet'},
             {'id':'mnist-onnx','installed':(models/'mnist-12.onnx').is_file(),'hebrew':'digits only; language independent','role':'Handwritten digits; full sequence requires review'},
@@ -195,10 +196,11 @@ def register(app,s):
     @app.put('/api/companies/{company_id}/ocr-settings')
     def save_ocr_settings(company_id:str,payload:dict=Body(...)):
         quality=payload.get('quality')
-        if quality not in ('fast','best'):fail('איכות OCR לא תקינה')
+        if quality not in ('fast','best','rivok'):fail('איכות OCR לא תקינה')
         from . import ocr
         from .paths import assets
         if quality=='best' and not (assets()/'tessdata_best/heb.traineddata').is_file():fail('יש להתקין scripts/setup_ocr_best.py לפני בחירת מודל זה')
+        if quality=='rivok' and not (assets()/'tessdata_rivok/heb_rivok.traineddata').is_file():fail('יש להתקין scripts/setup_tesseract_rivok.py לפני בחירת מודל זה')
         with db() as c:
             company(c,company_id);value=company_meta(c,company_id);value['ocr_quality']=quality;save_company_meta(c,company_id,value)
             audit(c,company_id,None,'ocr_settings_saved',{'quality':quality})

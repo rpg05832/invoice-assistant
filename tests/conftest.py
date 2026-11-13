@@ -15,7 +15,9 @@ def company(client):
 
 @pytest.fixture
 def supplier(client, company):
-    return client.post(f"/api/companies/{company['id']}/suppliers", json={'code': '00042', 'name': 'ספק בדיקה', 'tax_id': '987654321'}).json()
+    value=client.post(f"/api/companies/{company['id']}/suppliers", json={'code': '00042', 'name': 'ספק בדיקה', 'tax_id': '987654321'}).json()
+    confirm_supplier(client,company,value)
+    return value
 
 def pdf_bytes(number='INV-001', pages=1):
     pdf = fitz.open()
@@ -41,3 +43,10 @@ def ready_doc(client, company, supplier, number='INV-001'):
     assert r.json()['issues'] == [], r.text
     return doc_id
 
+
+
+def confirm_supplier(client,company,supplier):
+    info=client.get(f"/api/companies/{company['id']}/learning").json()
+    card=next(s for s in info["suppliers"] if s["id"]==supplier["id"])
+    response=client.post(f"/api/companies/{company['id']}/learning/suppliers/{supplier['id']}",json={"fingerprint":card["fingerprint"],"identity_confirmed":True,"rules":{}})
+    assert response.status_code==200,response.text

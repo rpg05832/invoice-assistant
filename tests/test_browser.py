@@ -70,6 +70,10 @@ def test_browser_accounting_workflow(browser_app):
     page.get_by_label('מספר צ׳ק 1',exact=True).fill('00001234')
     page.get_by_label('בדקתי',exact=True).check()
     page.get_by_role('button', name='שמירה ואישור ✓').click()
+    expect(page.get_by_role('dialog')).to_contain_text('אישור ולימוד הספק')
+    page.get_by_label('בדקתי שזהו כרטיס הספק הנכון בחברה זו').check()
+    page.get_by_role('button',name='שמירת התשובה ולימוד הספק').click()
+    page.get_by_role('button',name='שמירה ואישור ✓').click()
     expect(page.locator('#view')).to_contain_text('מוכן ליצוא')
     page.locator('[data-select]').first.check()
     page.get_by_role('button', name='יצוא נבחרים ↗').click()
@@ -177,3 +181,26 @@ def test_browser_advanced_lists_profiles_pages_and_metrics(browser_app):
     expect(page.get_by_role('dialog')).not_to_be_visible()
     page.set_viewport_size({'width':800,'height':1000});page.screenshot(path='test-results/tablet.png',full_page=True)
     page.set_viewport_size({'width':1440,'height':1100})
+
+
+def test_browser_personal_learning_and_real_local_training(browser_app):
+    page,url,directory=browser_app
+    page.goto(url);expect(page.locator('#dropzone')).to_be_visible()
+    page.locator('nav [data-view="learning"]').click()
+    expect(page.locator('#view')).to_contain_text('התקנה חדשה מתחילה עם מאגר אישי ריק')
+    expect(page.locator('[data-learning-example]')).to_have_count(1)
+    page.get_by_label('שם לסגנון כתב').fill('כתב יד בדיקת דפדפן')
+    page.get_by_role('button',name='הוספת סגנון',exact=True).click()
+    expect(page.locator('#view')).to_contain_text('כתב יד בדיקת דפדפן')
+    row=page.locator('[data-learning-example]').first
+    row.get_by_label('סגנון כתב לדוגמה').select_option(label='כתב יד בדיקת דפדפן')
+    row.get_by_role('button',name='שמירת תיוג').click()
+    expect(page.locator('#toast')).to_contain_text('התיוג האישי נשמר')
+    page.get_by_label('סבבי אימון').select_option('30')
+    page.get_by_role('button',name='אימון ובדיקה מקומיים',exact=True).click()
+    expect(page.locator('#learning-jobs')).to_contain_text('האימון והבדיקה הסתיימו',timeout=30000)
+    expect(page.locator('#learning-models')).to_contain_text('גרסת אימון שמורה')
+    expect(page.locator('#learning-models')).to_contain_text('חיתוכים מאושרים')
+    page.screenshot(path='test-results/personal-learning.png',full_page=True)
+    # The learned model was built by the UI, inside this installation's private data.
+    assert list((directory/'data/files/learning').rglob('*.npz'))

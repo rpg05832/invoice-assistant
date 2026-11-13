@@ -23,7 +23,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from openpyxl import Workbook, load_workbook
 from PIL import Image, ImageOps
 
-from . import ocr, vision, advanced
+from . import ocr, vision, advanced, learning, model_runtime
 from .domain import TARGETS, TYPES, FIELDS, EXPORT_FIELDS, extract, issues, money, safe_cell
 
 def uid(): return uuid.uuid4().hex
@@ -65,6 +65,7 @@ def create_app(data_dir=None):
         CREATE TABLE IF NOT EXISTS deliveries(id TEXT PRIMARY KEY,company_id TEXT NOT NULL REFERENCES companies(id),supplier_code TEXT NOT NULL,number TEXT NOT NULL,UNIQUE(company_id,supplier_code,number));
         ''')
         advanced.initialize(c)
+        learning.initialize(c)
 
     app = FastAPI(title='Invoice Assistant', version='0.1.0')
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=['127.0.0.1', 'localhost', '[::1]', 'testserver'])
@@ -106,6 +107,7 @@ def create_app(data_dir=None):
     def doc_issues(c, d):
         result = issues(d['fields'], supplier_for(c, d), d['checks'], company(c, d['company_id']))
         result.extend(advanced.extra_issues(c,d))
+        result.extend(learning.approval_issues(c,d))
         f = d['fields']
         if d['supplier_id'] and f.get('number'):
             selected = supplier_for(c, d)
@@ -121,6 +123,8 @@ def create_app(data_dir=None):
         advanced.enrich(c, d)
         d['issues'] = doc_issues(c, d)
         d['supplier'] = supplier_for(c, d)
+        d['learning_context']=advanced.meta(c,d['id']).get('learning_context',{})
+        d['supplier_reviewed']=bool(learning.supplier_review(c,d['supplier_id'],d['company_id'])) if d['supplier_id'] else False
         return d
 
     def match_supplier(c, company_id, fields):
@@ -130,6 +134,7 @@ def create_app(data_dir=None):
         if fields.get('supplier_name'):
             row = c.execute('SELECT a.supplier_id FROM aliases a JOIN suppliers s ON s.id=a.supplier_id WHERE a.company_id=? AND a.alias=? AND s.active=1', (company_id, fields['supplier_name'].strip().casefold())).fetchone()
             if row: return row['supplier_id']
+            return learning.match_alias(c,company_id,fields['supplier_name'])
         return None
 
     def insert_document(c, company_id, source_id, page, image_path, text, engine, warning, region=None, parent_id=None, tokens=None):
@@ -137,6 +142,7 @@ def create_app(data_dir=None):
         original_fields = dict(fields)
         supplier_id = match_supplier(c, company_id, fields)
         fields.update(advanced.defaults_for(c, company_id, supplier_id, fields['kind']))
+        fields.update(learning.defaults(c,company_id,supplier_id))
         c.execute('INSERT INTO documents(id,company_id,source_id,page,image,region,fields,original_fields,ocr_text,engine,warning,supplier_id,created,parent_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                   (doc_id, company_id, source_id, page, image_path.relative_to(data).as_posix(), encode(region) if region else None, encode(fields), encode(original_fields), text, engine, warning, supplier_id, now(), parent_id))
         suggestions=advanced.meta(c,parent_id).get('suggested_checks',[]) if parent_id else vision.suggested_checks(image_path,[fields.get(key,'') for key in ('number','supplier_tax_id','recipient_tax_id','allocation')],words=tokens or [])
@@ -286,7 +292,7 @@ def create_app(data_dir=None):
                         else:
                             prepared=source_dir/f'prepared-{index+1}.png'
                             vision.preprocess(path,prepared);prepared.replace(path)
-                            text,engine,warning=ocr.recognize(path,quality='best') if company_info.get('ocr_quality')=='best' else ocr.recognize(path)
+                            text,engine,warning=ocr.recognize(path,quality=company_info['ocr_quality']) if company_info.get('ocr_quality') in ('best','rivok') else ocr.recognize(path)
                         words = vision.pdf_tokens(page) if engine == 'pdf-text' else vision.tokens(path)
                         pages.append((index+1, path, text, engine, warning, words, {'items':vision.pdf_items(page),'processing':{'pdf_rotation':page.rotation}}))
             else:
@@ -301,7 +307,7 @@ def create_app(data_dir=None):
                         prepared = source_dir / f'prepared-{index+1}.png'
                         processing=vision.preprocess(path, prepared)
                         prepared.replace(path)
-                        text,engine,warning=ocr.recognize(path,quality='best') if company_info.get('ocr_quality')=='best' else ocr.recognize(path)
+                        text,engine,warning=ocr.recognize(path,quality=company_info['ocr_quality']) if company_info.get('ocr_quality') in ('best','rivok') else ocr.recognize(path)
                         pages.append((index+1, path, text, engine, warning, vision.tokens(path), {'processing':processing}))
             with db() as c:
                 c.execute('INSERT INTO sources VALUES(?,?,?,?,?,?)', (source_id, company_id, (file.filename or 'document')[:250], original.relative_to(data).as_posix(), sha, now()))
@@ -366,14 +372,20 @@ def create_app(data_dir=None):
                 region = check.get('region')
                 if region is not None: validate_region(region)
                 origin = advanced.source_document(c,d,check.get('source_document_id'))
-                clean_checks.append({'number': number.strip(), 'confirmed': check.get('confirmed') is True, 'region': region, 'engine': str(check.get('engine', 'manual'))[:100], 'source_document_id':origin['id'], 'source_id': origin['source_id'], 'page': origin['page'], 'proposals':check.get('proposals',[])[:5] if isinstance(check.get('proposals',[]),list) else []})
+                learning.check_writer(c,d['company_id'],check.get('writer_id'))
+                if check.get('reason','corrected_value') not in learning.REASONS:fail('סיבת תיקון צ׳ק לא תקינה')
+                clean_checks.append({'number': number.strip(), 'confirmed': check.get('confirmed') is True, 'region': region, 'engine': str(check.get('engine', 'manual'))[:100], 'source_document_id':origin['id'], 'source_id': origin['source_id'], 'page': origin['page'], 'proposals':check.get('proposals',[])[:30] if isinstance(check.get('proposals',[]),list) else []})
+                clean_checks[-1].update(writer_id=check.get('writer_id') or None,reason=check.get('reason',learning.feedback(payload)['reason']),explanation=str(check.get('explanation',learning.feedback(payload)['explanation']))[:2000])
             c.execute("UPDATE documents SET fields=?,supplier_id=?,checks=?,status='review',revision=revision+1 WHERE id=?", (encode(f), supplier_id, encode(clean_checks), doc_id))
             if payload.get('remember') and supplier_id and f.get('supplier_name'):
                 c.execute('INSERT INTO aliases VALUES(?,?,?) ON CONFLICT(company_id,alias) DO UPDATE SET supplier_id=excluded.supplier_id', (d['company_id'], f['supplier_name'].casefold(), supplier_id))
             audit(c, d['company_id'], doc_id, 'edited', {'before': d['fields'], 'after': f, 'checks_before': d['checks'], 'checks_after': clean_checks, 'supplier_before': d['supplier_id'], 'supplier_after': supplier_id, 'revision': d['revision'] + 1})
+            learning.record_edit(c,d,payload,f,supplier_id,clean_checks,data,crop,validate_region)
             advanced.update_extra(c, d, payload, f, supplier_id)
             advanced.remember_checks(c,d,clean_checks,data,crop)
-            return describe(c, document(c, doc_id))
+            result=describe(c, document(c, doc_id))
+        app.state.learning.auto(d['company_id'])
+        return result
 
     def editable(d):
         if d['status'] in ('exported', 'received', 'archived'):
@@ -406,12 +418,17 @@ def create_app(data_dir=None):
                 text, engine, warning = ocr.recognize(path, digits=True)
                 independent = vision.digit_proposal(path)
                 from .sequence_digits import recognize as sequence_recognize
-                sequences=[sequence_recognize(path,model) for model in ('paddle-v6-small','paddle-v5')]
+                writer=learning.check_writer(c,d['company_id'],payload.get('writer_id'))
+                sequences=learning.multi_proposals(path) if learning.settings(c,d['company_id'])['multi_pass'] else [sequence_recognize(path,model) for model in ('paddle-v6-small','paddle-v5')]
+                personal=app.state.learning.proposals(c,d['company_id'],path,writer)
                 remembered=advanced.check_memory(c,d['company_id'],path)
             # Keep uncertainty visible: multiple runs of digits are never concatenated.
             candidates = re.findall(r'[0-9]{1,30}', text)
-            primary=remembered or next((p for p in sequences if p.get('number')),None)
-            return {'number': primary['number'] if primary else candidates[0] if len(candidates) == 1 else '', 'candidates': candidates, 'confirmed': False, 'region': region, 'source_document_id':source_doc['id'], 'engine': engine, 'warning': warning, 'proposals':([remembered] if remembered else [])+sequences+[{'engine':engine,'number':candidates[0] if len(candidates)==1 else ''},independent]}
+            proposals=([remembered] if remembered else [])+personal+sequences+[{'engine':engine,'number':candidates[0] if len(candidates)==1 else ''},independent]
+            proposals+=learning.registered_checks(c,d,proposals)
+            proposals=learning.calibrate(c,d['company_id'],proposals)
+            primary=next((p for p in proposals if p.get('number') and p.get('available') is not False),None)
+            return {'number': primary['number'] if primary else candidates[0] if len(candidates) == 1 else '', 'candidates': candidates, 'confirmed': False, 'region': region, 'source_document_id':source_doc['id'], 'writer_id':writer,'engine': primary.get('engine',engine) if primary else engine, 'warning': warning, 'proposals':proposals}
 
     @app.get('/api/documents/{doc_id}/region-image')
     def region_image(doc_id: str, x: float, y: float, w: float, h: float, rotation: int = 0):
@@ -472,7 +489,9 @@ def create_app(data_dir=None):
             if errors: fail(errors, 422)
             for d in docs:
                 c.execute("UPDATE documents SET status='approved',revision=revision+1 WHERE id=?", (d['id'],))
+                learning.on_approve(c,d)
                 audit(c, company_id, d['id'], 'approved', {'revision': d['revision'] + 1})
+        app.state.learning.auto(company_id)
         return {'count': len(docs)}
 
     def default_profile():
@@ -681,6 +700,7 @@ def create_app(data_dir=None):
                 referenced = {r[0].replace('\\','/') for r in c.execute('SELECT path FROM sources')} | {r[0].replace('\\','/') for r in c.execute('SELECT image FROM documents')}
                 for r in c.execute('SELECT source_id,page FROM documents'):
                     referenced.add(f'files/{r[0]}/page-{r[1]}.png')
+                referenced.update(learning.backup_paths(c))
                 out = Path(temp.name) / 'backup.zip'
                 with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as archive:
                     archive.write(target, 'invoices.sqlite3')
@@ -697,6 +717,8 @@ def create_app(data_dir=None):
     def index(): return FileResponse(static / 'index.html')
 
     advanced.register(app, {**locals(),'TARGETS':TARGETS,'EXPORT_FIELDS':EXPORT_FIELDS})
+    learning.register(app,locals())
+    model_runtime.register(app)
     return app
 
 app = create_app()
