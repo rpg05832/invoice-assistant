@@ -36,6 +36,7 @@ def restore(archive, target):
             paths = {r[0] for r in conn.execute('SELECT path FROM sources')} | {r[0] for r in conn.execute('SELECT image FROM documents')}
             tables={r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if 'learning_examples' in tables:paths.update(r[0] for r in conn.execute('SELECT image FROM learning_examples'))
+            if 'learning_shared_examples' in tables:paths.update(r[0] for r in conn.execute('SELECT image FROM learning_shared_examples'))
             if 'learning_models' in tables:paths.update(r[0] for r in conn.execute('SELECT path FROM learning_models'))
             for relative in paths:
                 path = (staging / relative).resolve()

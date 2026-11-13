@@ -35,10 +35,15 @@ def initialize(c):
     CREATE TABLE IF NOT EXISTS learning_examples(id TEXT PRIMARY KEY,company_id TEXT NOT NULL REFERENCES companies(id),document_id TEXT NOT NULL REFERENCES documents(id),source_document_id TEXT NOT NULL REFERENCES documents(id),source_group TEXT NOT NULL,crop_sha TEXT NOT NULL,image TEXT NOT NULL,label TEXT NOT NULL,writer_id TEXT REFERENCES learning_writers(id),reason TEXT NOT NULL,explanation TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'auto',approved INTEGER NOT NULL DEFAULT 1,created TEXT NOT NULL,UNIQUE(company_id,crop_sha));
     CREATE TABLE IF NOT EXISTS learning_templates(id TEXT PRIMARY KEY,company_id TEXT NOT NULL REFERENCES companies(id),supplier_id TEXT NOT NULL REFERENCES suppliers(id),kind TEXT NOT NULL,field TEXT NOT NULL,region TEXT NOT NULL,source_document_id TEXT NOT NULL REFERENCES documents(id),created TEXT NOT NULL,UNIQUE(company_id,supplier_id,kind,field));
     CREATE TABLE IF NOT EXISTS learning_aliases(company_id TEXT NOT NULL REFERENCES companies(id),alias TEXT NOT NULL,supplier_id TEXT NOT NULL REFERENCES suppliers(id),PRIMARY KEY(company_id,alias));
+    CREATE TABLE IF NOT EXISTS learning_alias_evidence(company_id TEXT NOT NULL REFERENCES companies(id),alias TEXT NOT NULL,supplier_id TEXT NOT NULL REFERENCES suppliers(id),PRIMARY KEY(company_id,alias,supplier_id));
     CREATE TABLE IF NOT EXISTS learning_checks(id TEXT PRIMARY KEY,company_id TEXT NOT NULL REFERENCES companies(id),number TEXT NOT NULL,supplier_id TEXT REFERENCES suppliers(id),value TEXT NOT NULL,UNIQUE(company_id,number));
     CREATE TABLE IF NOT EXISTS learning_jobs(id TEXT PRIMARY KEY,company_id TEXT NOT NULL REFERENCES companies(id),state TEXT NOT NULL,progress INTEGER NOT NULL,value TEXT NOT NULL,created TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS learning_models(id TEXT PRIMARY KEY,company_id TEXT NOT NULL REFERENCES companies(id),writer_id TEXT REFERENCES learning_writers(id),path TEXT NOT NULL,active INTEGER NOT NULL DEFAULT 0,report TEXT NOT NULL,created TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS learning_engine_observations(example_id TEXT NOT NULL REFERENCES learning_examples(id),engine TEXT NOT NULL,number TEXT NOT NULL,PRIMARY KEY(example_id,engine));
+    CREATE TABLE IF NOT EXISTS learning_shared_examples(id TEXT PRIMARY KEY,company_id TEXT NOT NULL REFERENCES companies(id),source_group TEXT NOT NULL,invoice_key TEXT NOT NULL,crop_sha TEXT NOT NULL,image TEXT NOT NULL,label TEXT NOT NULL,writer_id TEXT REFERENCES learning_writers(id),reason TEXT NOT NULL,explanation TEXT NOT NULL,role TEXT NOT NULL,approved INTEGER NOT NULL,origin TEXT NOT NULL,created TEXT NOT NULL,UNIQUE(company_id,crop_sha));
+    CREATE TABLE IF NOT EXISTS learning_shared_templates(id TEXT PRIMARY KEY,company_id TEXT NOT NULL REFERENCES companies(id),supplier_id TEXT NOT NULL REFERENCES suppliers(id),kind TEXT NOT NULL,field TEXT NOT NULL,region TEXT NOT NULL,origin TEXT NOT NULL,UNIQUE(company_id,supplier_id,kind,field));
+    CREATE TABLE IF NOT EXISTS learning_supplier_proposals(supplier_id TEXT PRIMARY KEY REFERENCES suppliers(id),company_id TEXT NOT NULL REFERENCES companies(id),value TEXT NOT NULL,origin TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS learning_writer_origins(company_id TEXT NOT NULL REFERENCES companies(id),origin_installation TEXT NOT NULL,origin_id TEXT NOT NULL,writer_id TEXT NOT NULL REFERENCES learning_writers(id),PRIMARY KEY(company_id,origin_installation,origin_id));
     ''')
     if not c.execute('SELECT 1 FROM learning_installation').fetchone():c.execute('INSERT INTO learning_installation VALUES(?,?)',(uid(),now()))
     c.execute("UPDATE learning_jobs SET state='interrupted' WHERE state IN ('queued','running')")
@@ -49,15 +54,18 @@ def settings(c,company_id):
     return {'auto_train':True,'multi_pass':True,'minimum_new_examples':8,**(json.loads(row[0]) if row else {})}
 
 
-def supplier_signature(row):
-    return hashlib.sha256(encode({key:row[key] for key in ('id','company_id','code','name','tax_id','active','expense_account')}).encode()).hexdigest()
+def supplier_signature(row,c):
+    value={key:row[key] for key in ('id','company_id','code','name','tax_id','active','expense_account')}
+    extra=c.execute('SELECT value FROM supplier_meta WHERE supplier_id=?',(row['id'],)).fetchone()
+    value['metadata']=json.loads(extra[0]) if extra else {}
+    return hashlib.sha256(json.dumps(value,ensure_ascii=False,sort_keys=True).encode()).hexdigest()
 
 
 def supplier_review(c,supplier_id,company_id):
     supplier=c.execute('SELECT * FROM suppliers WHERE id=? AND company_id=?',(supplier_id,company_id)).fetchone()
     if not supplier:return None
     row=c.execute('SELECT * FROM learning_suppliers WHERE supplier_id=? AND company_id=?',(supplier_id,company_id)).fetchone()
-    return json.loads(row['answer']) if row and row['fingerprint']==supplier_signature(supplier) else None
+    return json.loads(row['answer']) if row and row['fingerprint']==supplier_signature(supplier,c) else None
 
 
 def approval_issues(c,d):
@@ -71,6 +79,7 @@ def defaults(c,company_id,supplier_id):
 
 
 def match_alias(c,company_id,name):
+    if c.execute('SELECT COUNT(DISTINCT supplier_id) FROM learning_alias_evidence WHERE company_id=? AND alias=?',(company_id,name.strip().casefold())).fetchone()[0]>1:return None
     row=c.execute('SELECT a.supplier_id FROM learning_aliases a JOIN suppliers s ON s.id=a.supplier_id WHERE a.company_id=? AND a.alias=? AND s.active=1',(company_id,name.strip().casefold())).fetchone()
     return row[0] if row and supplier_review(c,row[0],company_id) else None
 
@@ -110,6 +119,9 @@ def capture_example(c,d,check,data,crop,writer=None,reason='corrected_value',exp
     label=check['number'];ident=row['id'] if row else uid();relative=f"files/learning/{d['company_id']}/examples/{ident}.png";target=safe_path(data,relative);target.parent.mkdir(parents=True,exist_ok=True)
     target.write_bytes(content)
     source=c.execute('SELECT sha FROM sources WHERE id=?',(origin['source_id'],)).fetchone()[0]
+    shared=c.execute('SELECT label FROM learning_shared_examples WHERE company_id=? AND crop_sha=?',(d['company_id'],sha)).fetchone()
+    if shared and shared['label']!=label:
+        c.execute('UPDATE learning_shared_examples SET approved=0 WHERE company_id=? AND crop_sha=?',(d['company_id'],sha));c.execute('UPDATE learning_models SET active=0 WHERE company_id=?',(d['company_id'],))
     if row and (row['label']!=label or row['writer_id']!=writer or not row['approved']):
         c.execute('UPDATE learning_models SET active=0 WHERE company_id=?',(d['company_id'],))
     c.execute('INSERT INTO learning_examples VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(company_id,crop_sha) DO UPDATE SET label=excluded.label,writer_id=excluded.writer_id,reason=excluded.reason,explanation=excluded.explanation,approved=1,created=excluded.created',(ident,d['company_id'],d['id'],origin['id'],source,sha,relative,label,writer,check.get('reason',reason),str(check.get('explanation',explanation))[:2000],'auto',1,now()))
@@ -161,19 +173,39 @@ def record_edit(c,d,payload,fields,supplier_id,checks,data,crop,validate_region)
 def on_approve(c,d):
     from .advanced import meta
     # Only the most recent answer per field in this document can teach a layout or alias.
-    c.execute('UPDATE learning_events SET approved=1 WHERE document_id=?',(d['id'],))
+    c.execute("UPDATE learning_events SET approved=1 WHERE document_id=? AND field<>'training_label'",(d['id'],))
     context=meta(c,d['id']).get('learning_context',{})
     if d.get('supplier_id'):
-        for name in (d['original_fields'].get('supplier_name',''),d['fields'].get('supplier_name','')):
-            if name.strip():c.execute('INSERT INTO learning_aliases VALUES(?,?,?) ON CONFLICT(company_id,alias) DO UPDATE SET supplier_id=excluded.supplier_id',(d['company_id'],name.strip().casefold(),d['supplier_id']))
+        import difflib
+        official=c.execute('SELECT name FROM suppliers WHERE id=?',(d['supplier_id'],)).fetchone()[0]
+        for index,name in enumerate((d['original_fields'].get('supplier_name',''),d['fields'].get('supplier_name',''))):
+            if not name.strip() or (index==0 and difflib.SequenceMatcher(None,name.casefold(),official.casefold()).ratio()<.65):continue
+            alias=name.strip().casefold()
+            c.execute('INSERT OR IGNORE INTO learning_alias_evidence VALUES(?,?,?)',(d['company_id'],alias,d['supplier_id']))
+            c.execute('INSERT INTO learning_aliases VALUES(?,?,?) ON CONFLICT(company_id,alias) DO UPDATE SET supplier_id=excluded.supplier_id',(d['company_id'],alias,d['supplier_id']))
         for field,value in context.get('field_regions',{}).items():
             ids=[d['id']]+[r[0] for r in c.execute('SELECT child_id FROM document_links WHERE primary_id=?',(d['id'],))]
             origin=value.get('source_document_id') or d['id'];region={**value['region'],'page_offset':ids.index(origin) if origin in ids else 0}
             c.execute('INSERT INTO learning_templates VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(company_id,supplier_id,kind,field) DO UPDATE SET region=excluded.region,source_document_id=excluded.source_document_id,created=excluded.created',(uid(),d['company_id'],d['supplier_id'],d['fields']['kind'],field,encode(region),origin,now()))
 
 
+def evaluation_qualifies(result):
+    return result['tested']>=2 and result['personal_correct']==result['tested'] and not result['regressions']
+
+
 def backup_paths(c):
-    return {row[0] for row in c.execute('SELECT image FROM learning_examples')}|{row[0] for row in c.execute('SELECT path FROM learning_models')}
+    return {row[0] for row in c.execute('SELECT image FROM learning_examples')}|{row[0] for row in c.execute('SELECT image FROM learning_shared_examples')}|{row[0] for row in c.execute('SELECT path FROM learning_models')}
+
+
+def examples(c,company_id):
+    return [{**dict(r),'imported':False} for r in c.execute('SELECT * FROM learning_examples WHERE company_id=?',(company_id,))]+[{**dict(r),'document_id':None,'source_document_id':None,'imported':True} for r in c.execute('SELECT * FROM learning_shared_examples WHERE company_id=?',(company_id,))]
+
+
+def example_by_id(c,company_id,ident):
+    for table in ('learning_examples','learning_shared_examples'):
+        row=c.execute(f'SELECT * FROM {table} WHERE id=? AND company_id=?',(ident,company_id)).fetchone()
+        if row:return table,dict(row)
+    fail('דוגמת לימוד לא נמצאה',404)
 
 
 def dataset_fingerprint(rows):
@@ -214,7 +246,7 @@ class Manager:
             if self.busy:fail('אימון מקומי כבר פועל; אפשר לעקוב במסך הלמידה',409)
             with self.s['db']() as c:
                 self.s['company'](c,company_id);writer=check_writer(c,company_id,writer)
-                count=c.execute("SELECT COUNT(*) FROM learning_examples WHERE company_id=? AND approved=1 AND role<>'excluded' AND (? IS NULL OR writer_id=?)",(company_id,writer,writer)).fetchone()[0]
+                count=len(self.rows(c,company_id,writer))
                 if not count:fail('אשרו חיתוך צ׳ק אחד לפחות כדי להתחיל ללמוד')
                 if count>2000:fail('יש לבחור עד 2,000 דוגמאות לאימון מקומי אחד')
                 ident=uid();value={'writer_id':writer,'epochs':epochs,'auto_activate':payload.get('auto_activate',True) is True}
@@ -228,7 +260,7 @@ class Manager:
         with self.s['db']() as c:
             config=settings(c,company_id)
             if not config['auto_train']:return
-            count=c.execute("SELECT COUNT(*) FROM learning_examples WHERE company_id=? AND approved=1 AND role<>'excluded'",(company_id,)).fetchone()[0]
+            count=len(self.rows(c,company_id))
             latest=c.execute("SELECT value FROM learning_jobs WHERE company_id=? AND state='completed' ORDER BY created DESC LIMIT 1",(company_id,)).fetchone()
             previous=json.loads(latest[0]).get('example_count',0) if latest else 0
         if count-previous>=config['minimum_new_examples']:
@@ -240,13 +272,15 @@ class Manager:
         try:
             with self.s['db']() as c:
                 c.execute("UPDATE learning_jobs SET state='running' WHERE id=?",(job_id,))
-                rows=self.rows(c,company_id,config['writer_id']);train_rows,test_rows=split_samples(rows)
+                all_rows=self.rows(c,company_id);all_train,all_test=split_samples(all_rows)
                 # Persist first assignments so adding files does not rotate the held-out set.
-                for role,partition in (('train',train_rows),('validation',test_rows)):
+                for role,partition in (('train',all_train),('validation',all_test)):
                     for row in partition:
                         if row['role']=='auto':
-                            row['role']=role;c.execute('UPDATE learning_examples SET role=? WHERE id=?',(role,row['id']))
-                fingerprint=dataset_fingerprint(rows)
+                            row['role']=role;table='learning_shared_examples' if row.get('imported') else 'learning_examples';c.execute(f'UPDATE {table} SET role=? WHERE id=?',(role,row['id']))
+                train_rows=[r for r in all_train if config['writer_id'] is None or r['writer_id']==config['writer_id']]
+                test_rows=[r for r in all_test if config['writer_id'] is None or r['writer_id']==config['writer_id']]
+                rows=train_rows+test_rows;fingerprint=dataset_fingerprint(rows)
             if not train_rows:raise ValueError('בחרו לפחות מסמך אחד לאימון לצד מסמכי הבדיקה')
             def convert(row):
                 if self.stop.is_set() or self.cancel.is_set():raise InterruptedError('האימון נעצר')
@@ -264,12 +298,12 @@ class Manager:
             fitted,fit=model.train(samples,held,config['epochs'],progress=lambda epoch,total,loss:self.progress(job_id,20+int(epoch/total*70),{'phase':'training','epoch':epoch,'loss':round(loss,4),'example_count':len(rows),**config}),cancelled=lambda:self.stop.is_set() or self.cancel.is_set())
             evaluation=model.evaluate(fitted,held);training=model.evaluate(fitted,original_samples)
             ident=uid();relative=f'files/learning/{company_id}/models/{ident}.npz';path=safe_path(self.s['data'],relative);path.parent.mkdir(parents=True,exist_ok=True);temporary=path.with_suffix('.tmp');model.save(temporary,fitted);temporary.replace(path)
-            report={'base_model':model.BASE,'base_sha256':model.base_digest(),'dataset_fingerprint':fingerprint,'example_count':len(rows),'train_ids':[r['id'] for r in train_rows],'validation_ids':[r['id'] for r in test_rows],'writers':sorted({r['writer_id'] or 'unknown' for r in rows}),'validation':evaluation,'training':{'tested':training['tested'],'correct':training['personal_correct']},'fitting':fit,'bytes':path.stat().st_size,'activated':False,'scope':'this installation and company only','sample_labels':{r['id']:r['label'] for r in rows}}
+            report={'base_model':model.BASE,'base_sha256':model.base_digest(),'dataset_fingerprint':fingerprint,'example_count':len(rows),'train_ids':[r['id'] for r in train_rows],'training_groups':sorted({r['source_group'] for r in train_rows}),'training_crops':sorted({r['crop_sha'] for r in train_rows}),'training_invoice_keys':sorted({r['invoice_key'] for r in train_rows}),'training_label_hashes':{r['crop_sha']:hashlib.sha256(r['label'].encode()).hexdigest() for r in train_rows},'validation_ids':[r['id'] for r in test_rows],'writers':sorted({r['writer_id'] or 'unknown' for r in rows}),'validation':evaluation,'training':{'tested':training['tested'],'correct':training['personal_correct']},'fitting':fit,'bytes':path.stat().st_size,'activated':False,'scope':'this installation and company only','sample_labels':{r['id']:r['label'] for r in rows}}
             with self.s['db']() as c:
                 fresh=self.rows(c,company_id,config['writer_id']);unchanged=dataset_fingerprint(fresh)==fingerprint
                 previous=c.execute('SELECT path FROM learning_models WHERE company_id=? AND active=1 AND writer_id IS ?',(company_id,config['writer_id'])).fetchone()
                 incumbent=model.evaluate(model.load(safe_path(self.s['data'],previous[0])),held) if previous else None
-                qualified=unchanged and evaluation['tested']>=2 and not evaluation['regressions'] and evaluation['personal_correct']>=evaluation['baseline_correct'] and (not incumbent or evaluation['personal_correct']>=incumbent['personal_correct'])
+                qualified=unchanged and evaluation_qualifies(evaluation) and evaluation['personal_correct']>=evaluation['baseline_correct'] and (not incumbent or evaluation['personal_correct']>=incumbent['personal_correct'])
                 report.update(qualified=bool(qualified),dataset_unchanged=unchanged)
                 if config['auto_activate'] and qualified:
                     c.execute('UPDATE learning_models SET active=0 WHERE company_id=? AND writer_id IS ?',(company_id,config['writer_id']));report['activated']=True
@@ -285,9 +319,14 @@ class Manager:
         with self.s['db']() as c:c.execute('UPDATE learning_jobs SET progress=?,value=? WHERE id=?',(progress,encode(value),ident))
 
     def rows(self,c,company_id,writer_id=None):
-        result=[]
+        result=[];owner=c.execute('SELECT tax_id FROM companies WHERE id=?',(company_id,)).fetchone()[0]
         for r in c.execute("SELECT e.*,d.fields,d.supplier_id FROM learning_examples e JOIN documents d ON d.id=e.document_id WHERE e.company_id=? AND e.approved=1 AND e.role<>'excluded' AND (? IS NULL OR e.writer_id=?)",(company_id,writer_id,writer_id)):
-            value=dict(r);fields=json.loads(r['fields']);value['invoice_key']=encode((r['supplier_id'] or fields.get('supplier_tax_id',''),fields.get('kind'),fields.get('number'))) if fields.get('number') else 'source:'+r['source_group'];result.append(value)
+            value=dict(r);fields=json.loads(r['fields']);supplier=c.execute('SELECT tax_id,code FROM suppliers WHERE id=?',(r['supplier_id'],)).fetchone() if r['supplier_id'] else None
+            supplier_key=(supplier['tax_id'] or supplier['code']) if supplier else fields.get('supplier_tax_id','')
+            value['invoice_key']=hashlib.sha256(encode((owner,supplier_key,fields.get('kind'),fields.get('number'))).encode()).hexdigest() if fields.get('number') else 'source:'+r['source_group'];result.append(value)
+        seen={row['crop_sha'] for row in result}
+        for row in c.execute("SELECT * FROM learning_shared_examples WHERE company_id=? AND approved=1 AND role<>'excluded' AND (? IS NULL OR writer_id=?)",(company_id,writer_id,writer_id)):
+            if row['crop_sha'] not in seen:result.append({**dict(row),'imported':True});seen.add(row['crop_sha'])
         return result
 
     def proposals(self,c,company_id,path,writer_id=None):
@@ -343,11 +382,11 @@ def register(app,s):
             models=[{**dict(r),'report':json.loads(r['report'])} for r in c.execute('SELECT * FROM learning_models WHERE company_id=? ORDER BY created DESC LIMIT 50',(company_id,))]
             jobs=[{**dict(r),'value':json.loads(r['value'])} for r in c.execute('SELECT * FROM learning_jobs WHERE company_id=? ORDER BY created DESC LIMIT 10',(company_id,))]
             writers=[dict(r) for r in c.execute('SELECT * FROM learning_writers WHERE company_id=? ORDER BY name',(company_id,))]
-            examples=[{**dict(r),'image_url':f"/api/companies/{company_id}/learning/examples/{r['id']}/image"} for r in c.execute('SELECT * FROM learning_examples WHERE company_id=? ORDER BY created DESC LIMIT 2000',(company_id,))]
+            sample_rows=[{**r,'image_url':f"/api/companies/{company_id}/learning/examples/{r['id']}/image"} for r in sorted(examples(c,company_id),key=lambda e:e['created'],reverse=True)[:2000]]
             suppliers=[]
             for row in c.execute('SELECT * FROM suppliers WHERE company_id=? AND active=1 ORDER BY name',(company_id,)):
-                answer=supplier_review(c,row['id'],company_id);suppliers.append({**dict(row),'fingerprint':supplier_signature(row),'reviewed':answer is not None,'answer':answer})
-            return {'installation_id':installation,'settings':settings(c,company_id),'writers':writers,'examples':examples,'models':models,'jobs':jobs,'suppliers':suppliers,'reasons':REASONS,'event_count':c.execute('SELECT COUNT(*) FROM learning_events WHERE company_id=?',(company_id,)).fetchone()[0],'template_count':c.execute('SELECT COUNT(*) FROM learning_templates WHERE company_id=?',(company_id,)).fetchone()[0],'check_register_count':c.execute('SELECT COUNT(*) FROM learning_checks WHERE company_id=?',(company_id,)).fetchone()[0],'local_only':True}
+                answer=supplier_review(c,row['id'],company_id);proposed=c.execute('SELECT value FROM learning_supplier_proposals WHERE supplier_id=?',(row['id'],)).fetchone();suppliers.append({**dict(row),'fingerprint':supplier_signature(row,c),'reviewed':answer is not None,'answer':answer,'proposed_answer':json.loads(proposed[0]) if proposed else None})
+            return {'installation_id':installation,'settings':settings(c,company_id),'writers':writers,'examples':sample_rows,'models':models,'jobs':jobs,'suppliers':suppliers,'reasons':REASONS,'event_count':c.execute('SELECT COUNT(*) FROM learning_events WHERE company_id=?',(company_id,)).fetchone()[0],'template_count':sum(c.execute(f'SELECT COUNT(*) FROM {table} WHERE company_id=?',(company_id,)).fetchone()[0] for table in ('learning_templates','learning_shared_templates')),'check_register_count':c.execute('SELECT COUNT(*) FROM learning_checks WHERE company_id=?',(company_id,)).fetchone()[0],'local_only':True}
 
     @app.put('/api/companies/{company_id}/learning/settings')
     def save_settings(company_id:str,payload:dict=Body(...)):
@@ -374,7 +413,7 @@ def register(app,s):
         with db() as c:
             company(c,company_id);supplier=c.execute('SELECT * FROM suppliers WHERE id=? AND company_id=?',(supplier_id,company_id)).fetchone()
             if not supplier:fail('כרטיס ספק לא נמצא',404)
-            fingerprint=supplier_signature(supplier)
+            fingerprint=supplier_signature(supplier,c)
             if payload.get('fingerprint')!=fingerprint:fail('פרטי הכרטיס עודכנו; רעננו את השאלה לפני אישור',409)
             if payload.get('identity_confirmed') is not True:fail('אשרו שזהו כרטיס הספק הנכון')
             rules=payload.get('rules',{})
@@ -401,22 +440,25 @@ def register(app,s):
     @app.patch('/api/companies/{company_id}/learning/examples/{example_id}')
     def edit_example(company_id:str,example_id:str,payload:dict=Body(...)):
         with db() as c:
-            company(c,company_id);row=c.execute('SELECT * FROM learning_examples WHERE id=? AND company_id=?',(example_id,company_id)).fetchone()
-            if not row:fail('דוגמת לימוד לא נמצאה',404)
+            company(c,company_id);table,row=example_by_id(c,company_id,example_id)
             role=payload.get('role',row['role']);label=payload.get('label',row['label']);writer=check_writer(c,company_id,payload.get('writer_id',row['writer_id']))
             if role not in ('auto','train','validation','excluded') or not isinstance(label,str) or not re.fullmatch('[0-9]{1,30}',label):fail('תפקיד או ערך אמת לא תקינים')
-            c.execute('UPDATE learning_examples SET role=?,label=?,writer_id=?,created=? WHERE id=?',(role,label,writer,now(),example_id))
-            c.execute('UPDATE check_corrections SET number=?,created=? WHERE company_id=? AND crop_sha=?',(label,now(),company_id,row['crop_sha']))
+            approved=int(payload.get('approved',bool(row['approved']) if label==row['label'] else False) is True)
+            reason=payload.get('reason',row['reason']);explanation=payload.get('explanation',row['explanation'])
+            if reason not in REASONS or not isinstance(explanation,str) or len(explanation)>2000:fail('סיבת תיקון או הסבר לא תקינים')
+            c.execute(f'UPDATE {table} SET role=?,label=?,writer_id=?,approved=?,reason=?,explanation=?,created=? WHERE id=?',(role,label,writer,approved,reason,explanation,now(),example_id))
+            if approved:c.execute('UPDATE check_corrections SET number=?,created=? WHERE company_id=? AND crop_sha=?',(label,now(),company_id,row['crop_sha']))
+            else:c.execute('DELETE FROM check_corrections WHERE company_id=? AND crop_sha=?',(company_id,row['crop_sha']))
+            c.execute('INSERT INTO learning_events VALUES(?,?,?,?,?,?,?,?,?,?)',(uid(),company_id,row.get('document_id'),0,'training_label',row['label'],label,encode({'reason':reason,'explanation':explanation,'writer_id':writer,'role':role,'scope':'training_only'}),approved,now()))
             # A changed label or excluded example invalidates dependent versions immediately.
-            if label!=row['label'] or role!=row['role'] or writer!=row['writer_id']:c.execute('UPDATE learning_models SET active=0 WHERE company_id=?',(company_id,))
+            if label!=row['label'] or role!=row['role'] or writer!=row['writer_id'] or approved!=row['approved']:c.execute('UPDATE learning_models SET active=0 WHERE company_id=?',(company_id,))
             return {'ok':True}
 
     @app.get('/api/companies/{company_id}/learning/examples/{example_id}/image')
     def example_image(company_id:str,example_id:str):
         with db() as c:
-            company(c,company_id);row=c.execute('SELECT image FROM learning_examples WHERE id=? AND company_id=?',(example_id,company_id)).fetchone()
-            if not row:fail('דוגמה לא נמצאה',404)
-            return Response(safe_path(data,row[0]).read_bytes(),media_type='image/png')
+            company(c,company_id);_,row=example_by_id(c,company_id,example_id)
+            return Response(safe_path(data,row['image']).read_bytes(),media_type='image/png')
 
     @app.post('/api/companies/{company_id}/learning/models/{model_id}/activate')
     def activate(company_id:str,model_id:str):
@@ -425,7 +467,7 @@ def register(app,s):
             if not row:fail('מודל אישי לא נמצא',404)
             report=json.loads(row['report'])
             from .personal_digits import base_digest
-            if not report.get('qualified') or report.get('base_sha256')!=base_digest() or dataset_fingerprint(manager.rows(c,company_id,row['writer_id']))!=report['dataset_fingerprint']:fail('הריצו אימון ובדיקה על התיקונים העדכניים לפני הפעלת גרסה זו',409)
+            if not report.get('qualified') or not evaluation_qualifies(report['validation']) or report.get('base_sha256')!=base_digest() or dataset_fingerprint(manager.rows(c,company_id,row['writer_id']))!=report['dataset_fingerprint']:fail('הריצו אימון ובדיקה על התיקונים העדכניים לפני הפעלת גרסה זו',409)
             c.execute('UPDATE learning_models SET active=0 WHERE company_id=? AND writer_id IS ?',(company_id,row['writer_id']));c.execute('UPDATE learning_models SET active=1 WHERE id=?',(model_id,));return {'ok':True}
 
     @app.post('/api/companies/{company_id}/learning/models/deactivate')
@@ -473,7 +515,7 @@ def register(app,s):
             evaluation=model.evaluate(fitted,samples)
             incumbent=c.execute('SELECT path FROM learning_models WHERE company_id=? AND active=1 AND writer_id IS ?',(company_id,writer)).fetchone()
             previous=model.evaluate(model.load(safe_path(data,incumbent[0])),samples) if incumbent else None
-            qualified=evaluation['tested']>=2 and not evaluation['regressions'] and evaluation['personal_correct']>=evaluation['baseline_correct'] and (not previous or evaluation['personal_correct']>=previous['personal_correct'])
+            qualified=evaluation_qualifies(evaluation) and evaluation['personal_correct']>=evaluation['baseline_correct'] and (not previous or evaluation['personal_correct']>=previous['personal_correct'])
             ident=uid();relative=f'files/learning/{company_id}/models/{ident}.npz';target=safe_path(data,relative);target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(weights)
             report.update(validation=evaluation,qualified=bool(qualified),activated=False,imported=True,origin_model_id=manifest.get('origin_model_id'))
             c.execute('INSERT INTO learning_models VALUES(?,?,?,?,?,?,?)',(ident,company_id,writer,relative,0,encode(report),now()))
@@ -492,7 +534,8 @@ def register(app,s):
         from .domain import extract,money
         with db() as c:
             d=document(c,doc_id);s['editable'](d)
-            rows=c.execute('SELECT * FROM learning_templates WHERE company_id=? AND supplier_id=? AND kind=?',(d['company_id'],d['supplier_id'],d['fields']['kind'])).fetchall();result=[]
+            local=c.execute('SELECT * FROM learning_templates WHERE company_id=? AND supplier_id=? AND kind=?',(d['company_id'],d['supplier_id'],d['fields']['kind'])).fetchall()
+            shared=c.execute('SELECT * FROM learning_shared_templates WHERE company_id=? AND supplier_id=? AND kind=?',(d['company_id'],d['supplier_id'],d['fields']['kind'])).fetchall();rows=list(local)+[r for r in shared if r['field'] not in {r['field'] for r in local}];result=[]
             with tempfile.TemporaryDirectory() as temp:
                 for row in rows:
                     path=Path(temp)/'field.png';region=json.loads(row['region']);ids=[d['id']]+[r[0] for r in c.execute('SELECT child_id FROM document_links WHERE primary_id=?',(d['id'],))]
@@ -541,9 +584,9 @@ def register(app,s):
         with db() as c:
             company(c,company_id)
             if c.execute("SELECT 1 FROM learning_jobs WHERE company_id=? AND state IN ('queued','running')",(company_id,)).fetchone():fail('עצרו את האימון הפעיל לפני איפוס',409)
-            paths=[safe_path(data,r[0]) for r in c.execute('SELECT image FROM learning_examples WHERE company_id=?',(company_id,))]+[safe_path(data,r[0]) for r in c.execute('SELECT path FROM learning_models WHERE company_id=?',(company_id,))]
+            paths=[safe_path(data,r['image']) for r in examples(c,company_id)]+[safe_path(data,r[0]) for r in c.execute('SELECT path FROM learning_models WHERE company_id=?',(company_id,))]
             c.execute('DELETE FROM learning_engine_observations WHERE example_id IN (SELECT id FROM learning_examples WHERE company_id=?)',(company_id,))
-            for table in ('learning_models','learning_examples','learning_events','learning_templates','learning_aliases','learning_checks','learning_suppliers','learning_jobs','learning_writers','learning_settings','check_corrections'):c.execute(f'DELETE FROM {table} WHERE company_id=?',(company_id,))
+            for table in ('learning_models','learning_examples','learning_shared_examples','learning_events','learning_templates','learning_shared_templates','learning_supplier_proposals','learning_aliases','learning_alias_evidence','learning_checks','learning_suppliers','learning_jobs','learning_writer_origins','learning_writers','learning_settings','check_corrections'):c.execute(f'DELETE FROM {table} WHERE company_id=?',(company_id,))
             for row in c.execute('SELECT document_id,value FROM document_meta WHERE document_id IN (SELECT id FROM documents WHERE company_id=?)',(company_id,)).fetchall():
                 value=json.loads(row['value']);value.pop('learning_context',None);c.execute('UPDATE document_meta SET value=? WHERE document_id=?',(encode(value),row['document_id']))
             for row in c.execute('SELECT id,checks FROM documents WHERE company_id=?',(company_id,)).fetchall():
@@ -559,10 +602,11 @@ def register(app,s):
         import zipfile
         output=io.BytesIO()
         with db() as c:
-            company(c,company_id);tables={name:[dict(row) for row in c.execute(f'SELECT * FROM {name} WHERE company_id=?',(company_id,))] for name in ('learning_writers','learning_suppliers','learning_events','learning_examples','learning_templates','learning_aliases','learning_checks','learning_models')}
+            company(c,company_id);tables={name:[dict(row) for row in c.execute(f'SELECT * FROM {name} WHERE company_id=?',(company_id,))] for name in ('learning_writers','learning_suppliers','learning_events','learning_examples','learning_shared_examples','learning_templates','learning_shared_templates','learning_supplier_proposals','learning_aliases','learning_alias_evidence','learning_checks','learning_models')}
+            tables['learning_engine_observations']=[dict(r) for r in c.execute('SELECT o.* FROM learning_engine_observations o JOIN learning_examples e ON e.id=o.example_id WHERE e.company_id=?',(company_id,))]
             with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as archive:
                 archive.writestr('personal-learning.json',encode({'installation_id':c.execute('SELECT id FROM learning_installation').fetchone()[0],'company_id':company_id,'tables':tables}).encode())
-                for relative in {r['image'] for r in tables['learning_examples']}|{r['path'] for r in tables['learning_models']}:archive.write(safe_path(data,relative),relative)
+                for relative in {r['image'] for r in tables['learning_examples']+tables['learning_shared_examples']}|{r['path'] for r in tables['learning_models']}:archive.write(safe_path(data,relative),relative)
         return Response(output.getvalue(),media_type='application/zip',headers={'Content-Disposition':'attachment; filename="personal-learning-private.zip"'})
 
     return manager
@@ -573,9 +617,18 @@ def registered_checks(c,d,proposals):
     numbers={p.get('number') for p in proposals if p.get('number')};output=[]
     if not numbers:return output
     for row in c.execute('SELECT * FROM learning_checks WHERE company_id=? AND (supplier_id=? OR supplier_id IS NULL) LIMIT 10000',(d['company_id'],d['supplier_id'])):
-        if row['number'] in numbers or any(difflib.SequenceMatcher(None,row['number'],n).ratio()>=.75 for n in numbers):
-            output.append({'engine':'issued-check-register','number':row['number'],'confirmed':False,'available':True,'reason':'הצעה להצלבה מרשימת הצ׳קים האישית; יש להשוות למקור','register':json.loads(row['value'])})
-    return output[:10]
+        similarity=max(difflib.SequenceMatcher(None,row['number'],n).ratio() for n in numbers)
+        if row['number'] in numbers or similarity>=.75:
+            value=json.loads(row['value']);matched=[]
+            if row['supplier_id'] and row['supplier_id']==d['supplier_id']:matched.append('supplier')
+            if value.get('amount') and d['fields'].get('total'):
+                from .domain import money
+                try:
+                    if money(value['amount'])==money(d['fields']['total']):matched.append('amount')
+                except ValueError:pass
+            if value.get('date') and value['date'] in (d['fields'].get('date'),d['fields'].get('due_date')):matched.append('date')
+            output.append({'engine':'issued-check-register','number':row['number'],'confirmed':False,'available':True,'reason':'הצעה להצלבה מרשימת הצ׳קים האישית; יש להשוות למקור','register':value,'matched_fields':matched,'match_score':similarity+len(matched)})
+    return sorted(output,key=lambda p:p['match_score'],reverse=True)[:10]
 
 
 def calibrate(c,company_id,proposals):
@@ -587,9 +640,15 @@ def calibrate(c,company_id,proposals):
         if key in counts:proposal['personal_calibration']=counts[key]
     # Rank recommendations using local exact-match evidence, never raw scores from unrelated models.
     def score(proposal):
-        if proposal.get('engine')=='user-confirmed-exact-crop':return (3,0)
+        if proposal.get('engine') in ('user-confirmed-exact-crop','team-confirmed-exact-crop'):return (3,0)
         sample=proposal.get('personal_calibration',{})
         if sample.get('tested',0)>=3:return (1,(sample['correct']+1)/(sample['tested']+2))
         if proposal.get('engine')=='personal-ctc':return (1,.5)
         return (0,0)
     return sorted(proposals,key=score,reverse=True)
+
+
+def imported_memory(c,company_id,path):
+    sha=hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    row=c.execute("SELECT s.id,s.label FROM learning_shared_examples s WHERE s.company_id=? AND s.crop_sha=? AND s.approved=1 AND s.role<>'excluded' AND NOT EXISTS(SELECT 1 FROM learning_examples e WHERE e.company_id=s.company_id AND e.crop_sha=s.crop_sha)",(company_id,sha)).fetchone()
+    return {'engine':'team-confirmed-exact-crop','number':row['label'],'example_id':row['id'],'confirmed':False,'reason':'אותו חיתוך בדיוק הופיע בלמידת צוות שיובאה ואושרה; יש לאשר את השיוך למסמך הנוכחי'} if row else None

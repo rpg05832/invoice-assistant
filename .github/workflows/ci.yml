@@ -43,21 +43,9 @@ jobs:
         run: |
           python -m pip install pyinstaller==6.16.0
           python scripts/build_windows.py
-      - name: Smoke test standalone Windows application
+      - name: Smoke test standalone Windows OCR and personal training
         if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $env:INVOICE_DATA_DIR = Join-Path $env:RUNNER_TEMP 'invoice-exe-test'
-          $process = Start-Process -FilePath '.\dist\InvoiceAssistant\InvoiceAssistant.exe' -ArgumentList '--no-browser','--port','8877' -PassThru
-          try {
-            $ready = $false
-            for ($i = 0; $i -lt 90; $i++) {
-              try { $health = Invoke-RestMethod 'http://127.0.0.1:8877/api/health'; $ready = $true; break } catch { Start-Sleep -Milliseconds 500 }
-            }
-            if (-not $ready -or -not $health.ocr.hebrew) { throw 'Standalone OCR/server health failed' }
-            $company = Invoke-RestMethod 'http://127.0.0.1:8877/api/companies' -Method Post -ContentType 'application/json' -Body '{"name":"Standalone test"}'
-            if (-not $company.id) { throw 'Standalone database write failed' }
-          } finally { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+        run: python scripts/smoke_standalone.py dist/InvoiceAssistant/InvoiceAssistant.exe
       - uses: actions/upload-artifact@v4
         if: always()
         with:

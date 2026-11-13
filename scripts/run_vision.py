@@ -1,5 +1,6 @@
 """Run the optional vision model on loopback, with bounded CPU/context usage."""
 import os
+import secrets
 import subprocess
 from pathlib import Path
 
@@ -19,7 +20,11 @@ def main():
     if not candidates:raise SystemExit('Run scripts/setup_vision.py first')
     model=ROOT/'data/models'/next(name for name in files if 'mmproj' not in name);projector=ROOT/'data/models'/next(name for name in files if 'mmproj' in name)
     if not model.is_file() or not projector.is_file():raise SystemExit('Vision model missing. Run setup_vision.py')
-    command=[str(candidates[0]),'-m',str(model),'--mmproj',str(projector),'--alias',args.profile,'--host','127.0.0.1','--port',port,'-c','4096','-np','1','-t','2','-tb','2','-ngl','0','--no-mmproj-offload','--image-max-tokens','1024']
+    key=ROOT/f'data/runtime/vision-{port}.key'
+    if not key.is_file():
+        with key.open('x',encoding='ascii') as stream:stream.write(secrets.token_urlsafe(32))
+        if os.name!='nt':key.chmod(0o600)
+    command=[str(candidates[0]),'-m',str(model),'--mmproj',str(projector),'--api-key-file',str(key),'--alias',args.profile,'--host','127.0.0.1','--port',port,'-c','4096','-np','1','-t','2','-tb','2','-ngl','0','--no-mmproj-offload','--image-max-tokens','1024']
     subprocess.run(command,cwd=candidates[0].parent,check=True)
 
 if __name__=='__main__':main()

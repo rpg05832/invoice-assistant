@@ -64,10 +64,27 @@ def role(line):
     return None,0
 
 
+def currency_for(lines):
+    aliases={'USD':'USD','EUR':'EUR','GBP':'GBP','ILS':'ILS','דולר':'USD','דולרים':'USD','אירו':'EUR','יורו':'EUR','שקל':'ILS','שקלים':'ILS'}
+    explicit=[]
+    for line in lines:
+        match=re.search(r'(?:currency|מטבע)\s*[:=-]?\s*([A-Za-z]{3}|דולרים|דולר|אירו|יורו|שקלים|שקל)\b',line,re.I)
+        if match:explicit.append(aliases.get(match[1].upper(),aliases.get(match[1],match[1].upper())))
+    if explicit:return explicit[0] if len(set(explicit))==1 else ''
+    detected=set(re.findall(r'\b(?:USD|EUR|GBP|ILS|CAD|AUD|CHF|JPY|CNY)\b','\n'.join(lines),re.I));detected={v.upper() for v in detected}
+    text='\n'.join(lines)
+    if '€' in text:detected.add('EUR')
+    if '£' in text:detected.add('GBP')
+    if '₪' in text or re.search(r'ש[״"\']ח',text):detected.add('ILS')
+    if len(detected)==1:return next(iter(detected))
+    if detected or '$' in text:return ''
+    return 'ILS'
+
+
 def parse(text,fields,words=None,company_tax_id=''):
     text=re.sub('[\u200e\u200f\u202a-\u202e\u2066-\u2069]','',text).replace('−','-')
     lines=[line.strip() for line in text.splitlines() if line.strip()]
-    result=dict.fromkeys(fields,'');result.update(currency='ILS',kind=kind_for(lines))
+    result=dict.fromkeys(fields,'');result.update(currency=currency_for(lines),kind=kind_for(lines))
     result['purpose']='supplier_invoice' if result['kind'] in ('invoice','tax_receipt','credit') else 'reconciliation'
     numbers=[]
     for index,line in enumerate(lines):

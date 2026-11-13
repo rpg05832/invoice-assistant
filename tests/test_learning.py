@@ -149,6 +149,10 @@ def test_actual_background_training_versions_holdout_and_inference(client,compan
         assert any(p['engine']=='personal-ctc' for p in proposal['proposals'])
         assert proposal['confirmed'] is False
     else:assert client.post(prefix(company)+'/models/'+record['id']+'/activate').status_code==409
+    exported=client.get(prefix(company)+'/models/'+record['id']+'/export')
+    assert exported.status_code==200
+    imported=client.post(prefix(company)+'/models/import',files={'file':('my-model.zip',exported.content,'application/zip')})
+    assert imported.status_code==200,imported.text
     client.patch(prefix(company)+'/examples/'+examples[0]['id'],json={'label':'00002469'})
     assert not any(m['active'] for m in client.get(prefix(company)).json()['models'])
     assert client.post(prefix(company)+'/models/'+record['id']+'/activate').status_code==409
@@ -237,3 +241,33 @@ def test_model_import_rejects_files_from_another_installation(client,company):
     response=client.post(prefix(company)+'/models/import',files={'file':('personal.zip',archive.getvalue(),'application/zip')})
     assert response.status_code==409
     assert client.get(prefix(company)).json()['models']==[]
+
+
+def test_supplier_defaults_preserve_currency_observed_in_document(client,company,supplier):
+    card=client.get(prefix(company)).json()['suppliers'][0]
+    client.post(prefix(company)+'/suppliers/'+supplier['id'],json={'fingerprint':card['fingerprint'],'identity_confirmed':True,'rules':{'currency':'ILS'}})
+    pdf=fitz.open(stream=pdf_bytes('FOREIGN-001'),filetype='pdf');pdf[0].insert_text((50,280),'Currency USD');content=pdf.tobytes();pdf.close()
+    response=client.post(f"/api/companies/{company['id']}/upload",files={'file':('foreign.pdf',content,'application/pdf')})
+    assert response.status_code==200,response.text
+    doc=get_doc(client,company,response.json()['ids'][0])
+    assert doc['original_fields']['currency']==doc['fields']['currency']=='USD'
+
+
+def test_check_register_compares_supplier_amount_and_date(client,company,supplier):
+    ident=teach_crop(client,company,supplier)
+    response=client.post(prefix(company)+'/check-register',json={'rows':[{'number':'00002467','supplier_id':supplier['id'],'amount':'10.00','date':'2020-01-01'},{'number':'00002468','supplier_id':supplier['id'],'amount':'118.00','date':'2026-11-12'}]})
+    assert response.status_code==200,response.text
+    doc=get_doc(client,company,ident)
+    result=client.post('/api/documents/'+ident+'/check-region',json={'region':doc['checks'][0]['region']}).json()
+    candidates=[p for p in result['proposals'] if p['engine']=='issued-check-register']
+    assert candidates[0]['number']=='00002468'
+    assert set(candidates[0]['matched_fields'])=={'supplier','amount','date'}
+    assert result['confirmed'] is False
+
+
+def test_personal_activation_requires_all_heldout_checks_to_match():
+    from app.learning import evaluation_qualifies
+    assert not evaluation_qualifies({'tested':2,'personal_correct':0,'regressions':0})
+    assert not evaluation_qualifies({'tested':3,'personal_correct':2,'regressions':0})
+    assert not evaluation_qualifies({'tested':1,'personal_correct':1,'regressions':0})
+    assert evaluation_qualifies({'tested':3,'personal_correct':3,'regressions':0})

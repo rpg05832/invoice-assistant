@@ -2,11 +2,13 @@
 
 This repository was recovered from the previous chat's recorded edits. The old checkout was absent in the attached environment and the GitHub repository was empty. Two large recorded files were truncated: their missing server and browser portions were reimplemented and checked against the recovered acceptance tests. No claim of byte-for-byte recovery is made for those portions.
 
-The current local suite passed 59 tests, including three browser acceptance scenarios and digit-response regressions. The final CI result, rather than this progress count, is authoritative for each pushed commit.
+The current local suite passed 82 tests, including five browser acceptance scenarios, real CPU CTC training, private learning isolation, cross-installation/team learning transfer, conflicting-label review and independent hold-out checks. The source-launch smoke also passed OCR, personal training, export/import into a second clean installation and training from imported examples. These are functional checks, not a product accuracy percentage. The final CI result is authoritative for each pushed commit.
+
+Committed checkpoint df383ba passed 72 tests on Linux and Windows in run 43345320812, including Windows executable builds and basic OCR/server/database smoke checks. The expanded Windows executable smoke now also exercises personal training and explicit transfer between independent installations; its result must be checked for the new commit.
 
 ## Real browser coverage
 
-Company creation; mapped XLSX supplier import; PDF upload; source review; check-number leading zeros; human approval; export preview; XLSX download; rejected receipt; editing and a new batch; received receipt; splitting two invoices on one page; dragging a check region outside the cropped invoice; actual OCR of that region; local source enlargement; additional lists; profiles; page joins and unjoins; metrics; desktop and tablet screenshots.
+Company creation; mapped XLSX supplier import; PDF upload; source review; check-number leading zeros; human approval; export preview; XLSX download; rejected receipt; editing and a new batch; received receipt; splitting two invoices on one page; dragging a check region outside the cropped invoice; actual OCR of that region; local source enlargement; additional lists; profiles; page joins and unjoins; metrics; supplier questions; writer profiles; real local training; learning bundle download and previewed import into a new company without ledger documents; desktop and tablet screenshots.
 
 ## First GitHub run and fixes
 

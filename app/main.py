@@ -23,7 +23,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from openpyxl import Workbook, load_workbook
 from PIL import Image, ImageOps
 
-from . import ocr, vision, advanced, learning, model_runtime
+from . import ocr, vision, advanced, learning, model_runtime, learning_transfer
 from .domain import TARGETS, TYPES, FIELDS, EXPORT_FIELDS, extract, issues, money, safe_cell
 
 def uid(): return uuid.uuid4().hex
@@ -141,8 +141,11 @@ def create_app(data_dir=None):
         doc_id = uid(); fields = extract(text,tokens,company(c,company_id)['tax_id'])
         original_fields = dict(fields)
         supplier_id = match_supplier(c, company_id, fields)
-        fields.update(advanced.defaults_for(c, company_id, supplier_id, fields['kind']))
-        fields.update(learning.defaults(c,company_id,supplier_id))
+        defaults=learning.defaults(c,company_id,supplier_id)
+        defaults.update(advanced.defaults_for(c, company_id, supplier_id, fields['kind']))
+        for key,value in defaults.items():
+            if key=='currency' and fields.get('currency'):continue
+            fields[key]=value
         c.execute('INSERT INTO documents(id,company_id,source_id,page,image,region,fields,original_fields,ocr_text,engine,warning,supplier_id,created,parent_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                   (doc_id, company_id, source_id, page, image_path.relative_to(data).as_posix(), encode(region) if region else None, encode(fields), encode(original_fields), text, engine, warning, supplier_id, now(), parent_id))
         suggestions=advanced.meta(c,parent_id).get('suggested_checks',[]) if parent_id else vision.suggested_checks(image_path,[fields.get(key,'') for key in ('number','supplier_tax_id','recipient_tax_id','allocation')],words=tokens or [])
@@ -421,7 +424,7 @@ def create_app(data_dir=None):
                 writer=learning.check_writer(c,d['company_id'],payload.get('writer_id'))
                 sequences=learning.multi_proposals(path) if learning.settings(c,d['company_id'])['multi_pass'] else [sequence_recognize(path,model) for model in ('paddle-v6-small','paddle-v5')]
                 personal=app.state.learning.proposals(c,d['company_id'],path,writer)
-                remembered=advanced.check_memory(c,d['company_id'],path)
+                remembered=advanced.check_memory(c,d['company_id'],path) or learning.imported_memory(c,d['company_id'],path)
             # Keep uncertainty visible: multiple runs of digits are never concatenated.
             candidates = re.findall(r'[0-9]{1,30}', text)
             proposals=([remembered] if remembered else [])+personal+sequences+[{'engine':engine,'number':candidates[0] if len(candidates)==1 else ''},independent]
@@ -719,6 +722,7 @@ def create_app(data_dir=None):
     advanced.register(app, {**locals(),'TARGETS':TARGETS,'EXPORT_FIELDS':EXPORT_FIELDS})
     learning.register(app,locals())
     model_runtime.register(app)
+    learning_transfer.register(app,locals())
     return app
 
 app = create_app()
