@@ -232,3 +232,93 @@ def test_browser_learning_export_preview_and_import_to_new_company(browser_app):
     assert page.request.get(url+f'/api/companies/{target_company}/documents').json()==[]
     assert page.request.get(url+f'/api/companies/{source_company}/documents').json()
     page.screenshot(path='test-results/learning-transfer.png',full_page=True)
+
+
+def seed_fast_review(page,url,name,confirm=True,count=3):
+    company=page.request.post(url+'/api/companies',data={'name':name,'tax_id':'123456789'}).json()
+    path=url+f"/api/companies/{company['id']}"
+    supplier=page.request.post(path+'/suppliers',data={'code':'0042','name':'ספק מהיר','tax_id':'987654321'}).json()
+    if confirm:
+        card=page.request.get(path+'/learning').json()['suppliers'][0]
+        assert page.request.post(path+'/learning/suppliers/'+supplier['id'],data={'fingerprint':card['fingerprint'],'identity_confirmed':True,'rules':{}}).ok
+    for i in range(count):
+        upload=page.request.post(path+'/upload',multipart={'file':{'name':f'fast-{i+1}.pdf','mimeType':'application/pdf','buffer':pdf_bytes(f'FAST-{i+1}')}})
+        assert upload.ok,upload.text()
+    return company,path,page.request.get(path+'/documents').json()
+
+
+def test_browser_fast_review_saves_navigation_and_checks_every_approval(browser_app):
+    page,url,directory=browser_app
+    company,path,docs=seed_fast_review(page,url,'בדיקה מהירה')
+    first,second,third=docs
+    assert page.request.patch(url+'/api/documents/'+second['id'],data={'revision':second['revision'],'checks':[{'number':'00002468','confirmed':False,'region':None}]}).ok
+    page.goto(url);expect(page.locator('#company')).to_be_visible()
+    page.locator('#company').select_option(company['id'])
+    page.get_by_role('button',name='בדיקה מהירה · 3 ממתינים',exact=True).click()
+    expect(page.locator('#review-progress')).to_contain_text('מסמך 1 מתוך 3')
+    expect(page.locator('#source-image')).to_be_visible()
+    page.locator('#field-number').fill('FAST-CORRECTED')
+    expect(page.locator('[data-original-value="number"]')).to_contain_text(first['fields']['number'])
+    page.keyboard.press('Alt+ArrowLeft')
+    expect(page.locator('#field-number')).to_have_value(second['fields']['number'])
+    saved=page.request.get(path+'/documents').json()
+    record=next(d for d in saved if d['id']==first['id'])
+    assert record['fields']['number']=='FAST-CORRECTED' and record['status']=='review'
+    page.get_by_role('button',name='→ הקודם',exact=True).click()
+    expect(page.locator('#field-number')).to_have_value('FAST-CORRECTED')
+    page.get_by_role('tab',name='טקסט הפענוח',exact=True).click()
+    expect(page.locator('#review-ocr-panel')).to_contain_text(first['fields']['number'])
+    expect(page.locator('#source-image')).to_have_attribute('src',f"/api/documents/{first['id']}/image")
+    page.get_by_role('button',name='הגדלת המקור',exact=True).click()
+    expect(page.locator('#canvas')).to_have_attribute('style','width: 125%;')
+    page.screenshot(path='test-results/fast-review-ocr.png',full_page=True)
+    page.get_by_role('tab',name='נתונים לתיקון',exact=True).click()
+    page.locator('#field-number').press('Enter')
+    expect(page.locator('#field-number')).to_have_value(second['fields']['number'])
+    page.locator('#field-number').dispatch_event('keydown',{'key':'Enter','repeat':True})
+    expect(page.locator('#field-number')).to_have_value(second['fields']['number'])
+    # An unconfirmed check blocks Enter and keeps the same invoice open.
+    page.locator('#field-number').press('Enter')
+    expect(page.locator('#review-issues [role=alert]')).to_contain_text('לאשר כל מספר צ׳ק')
+    expect(page.locator('#field-number')).to_have_value(second['fields']['number'])
+    page.get_by_label('בדקתי',exact=True).check()
+    page.locator('#field-number').press('Enter')
+    expect(page.locator('#field-number')).to_have_value(third['fields']['number'])
+    page.locator('#field-date').fill('')
+    page.locator('#field-number').press('Enter')
+    expect(page.locator('#review-issues [role=alert]')).to_contain_text('תאריך')
+    expect(page.locator('#field-date')).to_be_focused()
+    page.locator('#field-date').fill('2026-11-12')
+    page.locator('#field-notes').fill('שורה ראשונה')
+    page.locator('#field-notes').press('End');page.locator('#field-notes').press('Enter')
+    expect(page.locator('#field-notes')).to_have_value('שורה ראשונה\n')
+    page.screenshot(path='test-results/fast-review-fields.png',full_page=True)
+    page.locator('#field-notes').press('Control+Enter')
+    expect(page.locator('#modal')).not_to_be_visible()
+    results=page.request.get(path+'/documents').json()
+    assert all(d['status']=='approved' for d in results)
+    assert next(d for d in results if d['id']==second['id'])['checks'][0]['number']=='00002468'
+
+
+def test_browser_fast_review_supplier_question_and_escape_preserve_work(browser_app):
+    page,url,directory=browser_app
+    company,path,docs=seed_fast_review(page,url,'בדיקה עם שאלת ספק',confirm=False,count=1)
+    page.goto(url);expect(page.locator('#company')).to_be_visible()
+    page.locator('#company').select_option(company['id'])
+    page.get_by_role('button',name='בדיקה מהירה · 1 ממתינים',exact=True).click()
+    page.locator('#field-notes').fill('תיקון שנשמר בחזרה לרשימה')
+    page.keyboard.press('Escape')
+    expect(page.locator('#modal')).not_to_be_visible()
+    saved=page.request.get(path+'/documents').json()[0]
+    assert saved['fields']['notes']=='תיקון שנשמר בחזרה לרשימה' and saved['status']=='review'
+    page.get_by_role('button',name='בדיקה מהירה · 1 ממתינים',exact=True).click()
+    page.locator('#field-number').press('Enter')
+    expect(page.locator('#supplier-teaching-form')).to_be_visible()
+    assert page.request.get(path+'/documents').json()[0]['status']=='review'
+    page.get_by_label('בדקתי שזהו כרטיס הספק הנכון בחברה זו').check()
+    page.get_by_role('button',name='שמירת התשובה ולימוד הספק',exact=True).click()
+    expect(page.locator('#review-workbench')).to_be_visible()
+    assert page.request.get(path+'/documents').json()[0]['status']=='review'
+    page.locator('#field-number').press('Enter')
+    expect(page.locator('#modal')).not_to_be_visible()
+    assert page.request.get(path+'/documents').json()[0]['status']=='approved'

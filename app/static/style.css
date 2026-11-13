@@ -10,3 +10,19 @@
 .toolbar select{width:auto;max-width:200px}.review-advanced-actions{flex-wrap:wrap;gap:6px;margin-bottom:12px}.review-advanced-actions button{font-size:11px}.items-table input{min-width:75px}.items-table input[data-line-field=description]{min-width:160px}.canvas-wrap[data-editing=true] .selection.saved{pointer-events:auto;cursor:move}.canvas-wrap[data-editing=true] .selection.saved::after{content:'';position:absolute;right:-4px;bottom:-4px;width:14px;height:14px;background:var(--green);cursor:nwse-resize}
 
 .learning-crop{max-width:180px;max-height:90px;background:#eef3fc;border:1px solid #d8e2ec;border-radius:5px}.learning-review{margin-top:20px;padding:14px;background:#edf6f4;border-radius:8px}.learning-check-controls{grid-column:1/-1;display:flex;gap:10px;flex-wrap:wrap}.learning-check-controls label{font-size:.85rem;flex:1;min-width:160px}.learning-job{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:10px 0}.learning-job progress{max-width:240px}.learning-job p{flex-basis:100%}
+
+/* Keep review actions and progress visible while source and fields scroll independently. */
+#review-workbench{padding:12px 24px;background:#f1f7f2;border-bottom:1px solid var(--line);outline:none}
+.review-queue-heading,.review-queue-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.review-queue-heading{justify-content:space-between;margin-bottom:8px;font-size:13px}
+#review-save-status,#review-workbench>small{font-size:11px;color:#5d6f65}
+.review-queue-actions{margin-bottom:6px}.review-queue-actions button{font-size:12px;padding:7px 10px}
+dialog.review-dialog{width:1560px}.review-dialog .review-body{height:calc(90vh - 300px);max-height:none}
+.review-tabs{position:sticky;top:-24px;z-index:2;background:white;display:flex;gap:8px;padding:10px 0;margin-bottom:12px}
+.review-tabs [aria-selected=true]{background:var(--mint);border-color:#84ac8c;color:var(--green-dark)}
+#review-ocr-panel{display:none}#review-ocr-panel pre{font-size:14px;max-height:none;line-height:1.8;unicode-bidi:plaintext}
+.review-ocr-mode>:not(.review-tabs):not(#review-ocr-panel){display:none}.review-ocr-mode #review-ocr-panel{display:block}
+.review-ocr-mode th,.review-ocr-mode td{white-space:normal;overflow-wrap:anywhere;padding:10px}
+.review-changed{background:#fff9e8;border-color:#bd9648}.review-original{display:block;font-size:10px;color:#86662e;overflow-wrap:anywhere;unicode-bidi:plaintext}
+.review-zoom-tools{display:inline-flex;gap:4px}.canvas-wrap.review-zoom{max-width:none;margin:0}
+@media(max-width:760px){#review-workbench{padding:10px 12px}.review-dialog .review-body{height:auto;max-height:48vh;overflow:auto}.review-tabs{top:0}.review-queue-actions button{font-size:11px}.review-queue-heading{font-size:12px}}

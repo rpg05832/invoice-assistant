@@ -24,7 +24,7 @@ def main():
     with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as archive:
         for path in (ROOT/'dist/InvoiceAssistant').rglob('*'):
             if path.is_file():archive.write(path,path.relative_to(ROOT/'dist'))
-        for name in ('README.md','docs/VALIDATION.md','third_party/tesseract-models-LICENSE.txt','third_party/digit-model-LICENSE.txt','third_party/indra-model-LICENSE.txt','third_party/sequence-models-LICENSE.txt','docs/MODEL_RESEARCH.md','docs/PERSONAL_LEARNING.md'):
+        for name in ('README.md','docs/VALIDATION.md','third_party/tesseract-models-LICENSE.txt','third_party/digit-model-LICENSE.txt','third_party/indra-model-LICENSE.txt','third_party/sequence-models-LICENSE.txt','docs/MODEL_RESEARCH.md','docs/PERSONAL_LEARNING.md','docs/FAST_REVIEW.md'):
             archive.write(ROOT/name,Path('InvoiceAssistant')/name)
     print(output)
 

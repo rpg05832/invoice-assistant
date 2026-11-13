@@ -2,9 +2,9 @@
 
 This repository was recovered from the previous chat's recorded edits. The old checkout was absent in the attached environment and the GitHub repository was empty. Two large recorded files were truncated: their missing server and browser portions were reimplemented and checked against the recovered acceptance tests. No claim of byte-for-byte recovery is made for those portions.
 
-The current local suite passed 82 tests, including five browser acceptance scenarios, real CPU CTC training, private learning isolation, cross-installation/team learning transfer, conflicting-label review and independent hold-out checks. The source-launch smoke also passed OCR, personal training, export/import into a second clean installation and training from imported examples. These are functional checks, not a product accuracy percentage. The final CI result is authoritative for each pushed commit.
+The local suite includes seven browser acceptance scenarios, real CPU CTC training, private learning isolation, cross-installation/team learning transfer, conflicting-label review and independent hold-out checks. Fast review coverage verifies keyboard approval and advancement, saving navigation, raw OCR/source comparison, original-value highlighting, zoom, held-key suppression, unconfirmed-check/date blocking, supplier questions and Escape saving. The source-launch smoke also passed OCR, personal training, export/import into a second clean installation and training from imported examples. These are functional checks, not a product accuracy percentage. The final CI result is authoritative for each pushed commit.
 
-Committed checkpoint df383ba passed 72 tests on Linux and Windows in run 43345320812, including Windows executable builds and basic OCR/server/database smoke checks. The expanded Windows executable smoke now also exercises personal training and explicit transfer between independent installations; its result must be checked for the new commit.
+Committed checkpoint e297df0 passed 82 tests on Linux and Windows in run 43353807083, including Windows executable builds. The expanded Windows executable smoke passed OCR, personal training and explicit transfer between independent installations. Subsequent review-interface changes require their own CI result.
 
 ## Real browser coverage
 
