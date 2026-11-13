@@ -28,6 +28,12 @@ def main():
             time.sleep(.1)
         assert not executable.exists(),'Uninstall did not remove application files'
         assert marker.read_text(encoding='utf-8')=='private data must remain'
+        # Inno's uninstaller finishes in a child process after the launcher exits.
+        # The log can remain locked briefly even after application files disappear.
+        for _ in range(200):
+            try:(root/'uninstall.log').unlink(missing_ok=True);break
+            except PermissionError:time.sleep(.1)
+        else:raise AssertionError('Uninstaller did not release its log')
     print('Per-user Windows installer, OCR, CTC training, learning transfer and data-preserving uninstall: passed')
 
 
