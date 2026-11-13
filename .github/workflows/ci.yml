@@ -29,6 +29,7 @@ jobs:
         shell: pwsh
         run: |
           choco install tesseract --yes --no-progress
+          choco install innosetup --yes --no-progress
           "$env:ProgramFiles\Tesseract-OCR" >> $env:GITHUB_PATH
       - run: python scripts/setup_ocr.py
       - run: python scripts/setup_digits.py
@@ -46,6 +47,20 @@ jobs:
       - name: Smoke test standalone Windows OCR and personal training
         if: runner.os == 'Windows'
         run: python scripts/smoke_standalone.py dist/InvoiceAssistant/InvoiceAssistant.exe
+      - name: Build single-file per-user Windows installer
+        if: runner.os == 'Windows'
+        run: python scripts/build_installer.py
+      - name: Test installed app and data-preserving uninstall
+        if: runner.os == 'Windows'
+        run: python scripts/smoke_installer.py dist/InvoiceAssistant-Setup-0.1.0-x64.exe
+      - name: Upload tested Windows installer
+        if: success() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: InvoiceAssistant-Setup-Windows-x64
+          path: |
+            dist/*Setup*.exe
+            dist/*.sha256
       - uses: actions/upload-artifact@v4
         if: always()
         with:

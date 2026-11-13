@@ -4,7 +4,11 @@
 
 ## התקנה ב־Windows
 
-הדרך המומלצת היא חבילת Windows שנבנתה ונבדקה ב־GitHub Actions. במסך **Actions → Validate local invoice workflow** פותחים הרצה מוצלחת של הגרסה הרצויה, מורידים את **validation-windows-latest**, ומחלצים מתוכה את `InvoiceAssistant-Windows-x64.zip`. מחלצים את כל תיקיית `InvoiceAssistant` למיקום קבוע שבבעלותכם, למשל `C:\InvoiceAssistant`, ומפעילים `InvoiceAssistant.exe`. משאירים את תיקיית `_internal` ליד קובץ ההפעלה. החבילה כוללת Python, מנוע OCR ומודלים קלים; אין צורך להתקין אותם בנפרד. הורדת תוצרי Actions עשויה לדרוש כניסה ל־GitHub.
+להתקנה בקובץ אחד, בתוצרי הרצה מוצלחת ב־GitHub Actions בוחרים **InvoiceAssistant-Setup-Windows-x64**, מחלצים את `InvoiceAssistant-Setup-0.1.0-x64.exe` ומפעילים אותו. המתקין מתקין בתיקייה האישית ויוצר קיצור דרך; הוא כולל את Python, ה־OCR והמודלים הקלים. הנתונים והלמידה נשמרים בנפרד מתיקיית התוכנה ונשארים גם בהסרה. מודלי ראייה גדולים הם בחירה נפרדת מתוך התוכנה.
+
+למי שמעדיף עותק ללא מתקין:
+
+אפשר להשתמש בחבילת Windows שנבנתה ונבדקה ב־GitHub Actions. במסך **Actions → Validate local invoice workflow** פותחים הרצה מוצלחת של הגרסה הרצויה, מורידים את **validation-windows-latest**, ומחלצים מתוכה את `InvoiceAssistant-Windows-x64.zip`. מחלצים את כל תיקיית `InvoiceAssistant` למיקום קבוע שבבעלותכם, למשל `C:\InvoiceAssistant`, ומפעילים `InvoiceAssistant.exe`. משאירים את תיקיית `_internal` ליד קובץ ההפעלה. החבילה כוללת Python, מנוע OCR ומודלים קלים; אין צורך להתקין אותם בנפרד. הורדת תוצרי Actions עשויה לדרוש כניסה ל־GitHub.
 
 לאחר ההפעלה הדפדפן נפתח בכתובת המקומית `http://127.0.0.1:8765`. נתונים אישיים נשמרים בתיקיית הנתונים המקומית. לכל עובד אפשר להתקין עותק אישי ולהעביר ביניהם חבילות למידה מתוך המסך; אין להפעיל מסד SQLite משותף מתוך תיקיית סנכרון.
 
