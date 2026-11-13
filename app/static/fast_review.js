@@ -63,7 +63,7 @@ function reviewIssueFocus(){
 async function reviewOperation(task){
  if(reviewLocked()||!$('#review-form'))return;
  state.reviewBusy=true;updateReviewControls();
- try{await task();}
+ try{if(state.reviewSessionSaver)await state.reviewSessionSaver();await task();}
  catch(error){
   const issues=$('#review-issues');if(issues){issues.innerHTML='<div class="notice" role="alert"></div>';issues.firstChild.textContent=error.message;reviewIssueFocus();}
   toast(error.message,true);
@@ -84,8 +84,9 @@ async function approveReviewNext(){
   if(state.current.status!=='approved'||reviewDirty())await saveDocument(true);
   // Supplier questions and validation errors must leave this invoice awaiting review.
   if(state.docs.find(d=>d.id===id)?.status!=='approved')return;
+  if(state.reviewAfterApproval)await state.reviewAfterApproval(id);
   const docs=reviewQueue(),index=docs.findIndex(d=>d.id===id);
-  const next=[...docs.slice(index+1),...docs.slice(0,index)].find(pendingReview);
+  const next=[...docs.slice(index+1),...docs.slice(0,index)].find(state.reviewNextCandidate||pendingReview);
   if(next){review(next.id);toast('אושר · החשבונית הבאה מוכנה לבדיקה');}
   else{closeModal();toast('הבדיקה בתור הושלמה · המסמכים שאישרת מוכנים ליצוא');}
  });
@@ -145,14 +146,17 @@ document.addEventListener('click',e=>{
 document.addEventListener('keydown',e=>{
  if(!$('#modal').open||!$('#review-form'))return;
  if(e.isComposing)return;
+ if(e.target.closest('[data-review-no-approve]'))return;
  let action=null;
- if(e.altKey&&e.key==='ArrowLeft')action=()=>moveReview(1);
- else if(e.altKey&&e.key==='ArrowRight')action=()=>moveReview(-1);
+ const keys=state.reviewTools?.preferences?.keys||{approve:'Enter',next:'Alt+ArrowLeft',previous:'Alt+ArrowRight'};
+ const chord=(e.altKey?'Alt+':'')+(e.ctrlKey?'Ctrl+':'')+e.key;
+ if(chord===keys.next)action=()=>moveReview(1);
+ else if(chord===keys.previous)action=()=>moveReview(-1);
  else if(e.key==='F8')action=()=>reviewIssueFocus();
- else if(e.key==='Enter'&&!e.altKey&&!e.metaKey&&editableReview(state.current)){
+ else if((chord===keys.approve||(keys.approve==='Enter'&&chord==='Ctrl+Enter'))&&!e.metaKey&&editableReview(state.current)){
   const target=e.target;
   if(target.closest('button,a,select,[contenteditable=true]')||target.matches('input[type=checkbox],input[type=radio],input[type=file]'))return;
-  if(target.matches('textarea')&&!e.ctrlKey)return;
+  if(target.matches('textarea')&&e.key==='Enter'&&!e.ctrlKey)return;
   action=()=>approveReviewNext();
  }
  if(!action)return;

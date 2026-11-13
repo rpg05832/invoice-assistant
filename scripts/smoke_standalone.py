@@ -31,6 +31,9 @@ def exercise(command,directory,port,source=False,incoming=None):
         assert client.get('/api/companies').json()==[], 'Fresh install inherited company data'
         company=client.post('/api/companies',json={'name':'Standalone personal test'}).json();prefix=f"/api/companies/{company['id']}/learning"
         fresh=client.get(prefix).json();assert fresh['examples']==fresh['models']==fresh['writers']==[]
+        workspace=client.get(f"/api/companies/{company['id']}/review-workspace").json()
+        assert workspace['flags']==workspace['snippets']==[] and workspace['session'] is None
+        assert client.post('/api/review-calculator',json={'mode':'total','amount':'118.00','rate':'18'}).json()['net']=='100.00'
         if incoming:
             preview=client.post(prefix+'/transfer/preview',files={'file':('team-learning.zip',incoming,'application/zip')});assert preview.is_success,preview.text
             result=client.post(prefix+'/transfer/import',json={'token':preview.json()['token'],'confirmed':True,'approve_examples':True,'categories':{'examples':True,'models':True},'supplier_mapping':{},'writer_mapping':{}});assert result.is_success,result.text
@@ -43,6 +46,7 @@ def exercise(command,directory,port,source=False,incoming=None):
             upload=client.post(f"/api/companies/{company['id']}/upload",files={'file':('synthetic.png',buffer.getvalue(),'image/png')});assert upload.is_success,upload.text
             ident=upload.json()['ids'][0];doc=client.get(f"/api/companies/{company['id']}/documents").json()[0]
             reply=client.patch('/api/documents/'+ident,json={'revision':doc['revision'],'checks':[{'number':'00002468','confirmed':True,'region':{'x':0,'y':0,'w':1,'h':1,'rotation':0}}]});assert reply.is_success,reply.text
+            assert client.put('/api/documents/'+ident+'/review-flag',json={'marked':True,'note':'Synthetic review marker'}).is_success
         job=client.post(prefix+'/train',json={'epochs':1,'auto_activate':False});assert job.is_success,job.text
         for _ in range(180):
             state=client.get(prefix).json();record=next(j for j in state['jobs'] if j['id']==job.json()['id'])

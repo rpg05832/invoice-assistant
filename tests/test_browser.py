@@ -252,6 +252,7 @@ def test_browser_fast_review_saves_navigation_and_checks_every_approval(browser_
     company,path,docs=seed_fast_review(page,url,'בדיקה מהירה')
     first,second,third=docs
     assert page.request.patch(url+'/api/documents/'+second['id'],data={'revision':second['revision'],'checks':[{'number':'00002468','confirmed':False,'region':None}]}).ok
+    assert page.request.patch(url+'/api/documents/'+third['id'],data={'revision':third['revision'],'fields':{'currency':''}}).ok
     page.goto(url);expect(page.locator('#company')).to_be_visible()
     page.locator('#company').select_option(company['id'])
     page.get_by_role('button',name='בדיקה מהירה · 3 ממתינים',exact=True).click()
@@ -284,6 +285,7 @@ def test_browser_fast_review_saves_navigation_and_checks_every_approval(browser_
     page.get_by_label('בדקתי',exact=True).check()
     page.locator('#field-number').press('Enter')
     expect(page.locator('#field-number')).to_have_value(third['fields']['number'])
+    expect(page.locator('#field-currency')).to_have_value('')
     page.locator('#field-date').fill('')
     page.locator('#field-number').press('Enter')
     expect(page.locator('#review-issues [role=alert]')).to_contain_text('תאריך')
@@ -293,6 +295,10 @@ def test_browser_fast_review_saves_navigation_and_checks_every_approval(browser_
     page.locator('#field-notes').press('End');page.locator('#field-notes').press('Enter')
     expect(page.locator('#field-notes')).to_have_value('שורה ראשונה\n')
     page.screenshot(path='test-results/fast-review-fields.png',full_page=True)
+    page.locator('#field-notes').press('Control+Enter')
+    expect(page.locator('#review-issues [role=alert]')).to_contain_text('מטבע')
+    expect(page.locator('#field-currency')).to_be_focused()
+    page.locator('#field-currency').select_option('ILS')
     page.locator('#field-notes').press('Control+Enter')
     expect(page.locator('#modal')).not_to_be_visible()
     results=page.request.get(path+'/documents').json()
@@ -322,3 +328,156 @@ def test_browser_fast_review_supplier_question_and_escape_preserve_work(browser_
     page.locator('#field-number').press('Enter')
     expect(page.locator('#modal')).not_to_be_visible()
     assert page.request.get(path+'/documents').json()[0]['status']=='approved'
+
+
+def test_browser_late_company_response_cannot_replace_active_company(browser_app):
+    page,url,directory=browser_app
+    a,path_a,docs_a=seed_fast_review(page,url,'חברה עם תשובה מושהית',count=1)
+    b,path_b,docs_b=seed_fast_review(page,url,'חברה פעילה מהירה',count=1)
+    page.goto(url);expect(page.locator('#dropzone')).to_be_visible()
+    held=[]
+    page.route(path_a+'/documents',lambda route:held.append(route))
+    try:
+        with page.expect_request(path_a+'/documents'):
+            page.locator('#company').select_option(a['id'])
+        page.locator('#company').select_option(b['id'])
+        expect(page.locator(f'[data-open="{docs_b[0]["id"]}"]')).to_be_visible()
+        # Release the old response after the new company's view has finished loading.
+        with page.expect_response(path_a+'/documents'):
+            held[0].fulfill(response=held[0].fetch())
+        page.evaluate('async () => { await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); }')
+        expect(page.locator('#company')).to_have_value(b['id'])
+        expect(page.locator(f'[data-open="{docs_b[0]["id"]}"]')).to_be_visible()
+        expect(page.locator(f'[data-open="{docs_a[0]["id"]}"]')).to_have_count(0)
+        assert page.evaluate('state.docs.every(d=>d.company_id===state.company.id)')
+    finally:page.unroute(path_a+'/documents')
+
+
+def test_browser_source_copy_loupe_calculator_snippets_preferences_and_resume(browser_app):
+    page,url,directory=browser_app
+    company,path,docs=seed_fast_review(page,url,'כלי בדיקה אישיים',count=2)
+    current,previous=docs
+    assert page.request.patch(url+'/api/documents/'+previous['id'],data={'revision':previous['revision'],'fields':{'cost_center':'007','expense_account':'0600'}}).ok
+    page.goto(url);expect(page.locator('#dropzone')).to_be_visible();page.locator('#company').select_option(company['id'])
+    page.get_by_role('button',name='בדיקה מהירה · 2 ממתינים',exact=True).click()
+    search=page.get_by_label('חיפוש ספק לפי שם, קוד או מספר עוסק',exact=True)
+    search.fill('0042');search.press('Enter')
+    expect(page.locator('#field-number')).to_be_focused()
+    expect(page.locator('#review-field-loupe canvas')).to_be_visible()
+    page.locator('#field-number').fill('תיקון זמני')
+    page.locator('#review-workspace-tools summary').click()
+    page.get_by_role('button',name='לחיצה להעתקה מהמקור',exact=True).click()
+    page.get_by_role('button',name='העתקת '+current['fields']['number'],exact=True).click()
+    expect(page.locator('#field-number')).to_have_value(current['fields']['number'])
+    page.screenshot(path='test-results/review-tools.png',full_page=True)
+    page.get_by_role('button',name='מחשבון מע״מ',exact=True).click()
+    page.get_by_label('סכום',exact=True).fill('200.00')
+    page.get_by_role('button',name='חישוב והצגת התוצאה',exact=True).click()
+    expect(page.locator('#calculator-result')).to_contain_text('236.00')
+    page.get_by_role('button',name='העתקת התוצאה לשדות לבדיקה',exact=True).click()
+    expect(page.locator('#field-total')).to_have_value('236.00')
+    assert page.request.get(path+'/documents').json()[0]['status']=='review'
+    page.locator('#review-workspace-tools summary').click()
+    page.get_by_role('button',name='השלמות אישיות',exact=True).click()
+    page.get_by_label('קיצור ללא רווחים',exact=True).fill('בדק')
+    page.get_by_label('הטקסט להשלמה',exact=True).fill('נבדק מול תעודת משלוח')
+    page.get_by_role('button',name='שמירת השלמה אישית',exact=True).click()
+    expect(page.locator('#snippet-list')).to_contain_text(';בדק')
+    page.get_by_role('button',name='חזרה למסמך',exact=True).click()
+    page.locator('#field-notes').fill(';בדק ')
+    expect(page.locator('#field-notes')).to_have_value('נבדק מול תעודת משלוח')
+    page.locator('#review-workspace-tools summary').click()
+    page.get_by_role('button',name='חשבונית קודמת מהספק',exact=True).click()
+    expect(page.get_by_alt_text('חשבונית קודמת מאותו ספק')).to_be_visible()
+    page.get_by_label('העתקת מרכז עלות',exact=True).check()
+    page.get_by_role('button',name='העתקת השדות שנבחרו לבדיקה',exact=True).click()
+    expect(page.locator('#field-cost_center')).to_have_value('007')
+    page.locator('#review-workspace-tools summary').click()
+    page.get_by_role('button',name='לחזור למסמך הזה',exact=True).click()
+    page.get_by_label('מה נשאר לבדוק?',exact=True).fill('בדיקה נוספת של התשלום')
+    page.get_by_role('button',name='שמירת הסימון וחזרה למסמך',exact=True).click()
+    expect(page.locator('#review-workspace-tools')).to_be_visible()
+    page.locator('#review-workspace-tools summary').click()
+    page.get_by_role('button',name='סדר שדות וקיצורים',exact=True).click()
+    page.get_by_label('רוחב המקור',exact=True).select_option('60')
+    page.get_by_label('גודל אות בשדות',exact=True).select_option('16')
+    page.get_by_label('אישור והבא',exact=True).select_option('F9')
+    page.locator('[data-order-field="number"] input').check();page.locator('[data-order-field="total"] input').check()
+    page.get_by_role('button',name='שמירת הסביבה האישית',exact=True).click()
+    expect(page.locator('#personal-review-fields')).to_contain_text('מספר מסמך')
+    expect(page.locator('[data-action="review-approve-next"]')).to_contain_text('F9')
+    page.locator('#field-notes').fill('מיקום עבודה אישי')
+    page.keyboard.press('Escape');expect(page.locator('#modal')).not_to_be_visible()
+    saved_session=page.request.get(path+'/review-workspace').json()['session']
+    page.reload();expect(page.locator('#dropzone')).to_be_visible()
+    page.get_by_role('button',name='המשך מהמקום שהפסקתי',exact=True).click()
+    expect(page.locator('#field-notes')).to_have_value('מיקום עבודה אישי')
+    expect(page.locator('#field-notes')).to_be_focused()
+    assert abs(page.locator('.editor').evaluate('el=>el.scrollTop')-saved_session['editor_scroll'])<3
+    expect(page.locator('[data-action="review-approve-next"]')).to_contain_text('F9')
+    page.locator('.review-thumbnails summary').click()
+    page.locator(f'[data-review-thumb="{previous["id"]}"]').click()
+    expect(page.locator('#field-number')).to_have_value(previous['fields']['number'])
+    page.locator('#field-number').press('F9')
+    expect(page.locator('#field-number')).to_have_value(current['fields']['number'])
+    assert next(d for d in page.request.get(path+'/documents').json() if d['id']==previous['id'])['status']=='approved'
+    page.keyboard.press('Escape');expect(page.locator('#modal')).not_to_be_visible()
+
+
+def test_browser_review_queues_bulk_preview_and_undo(browser_app):
+    page,url,directory=browser_app
+    company,path,docs=seed_fast_review(page,url,'תורי טיפול ותיקון מרוכז',count=2)
+    a,b=docs
+    page.request.patch(url+'/api/documents/'+a['id'],data={'revision':a['revision'],'fields':{'total':'120.00'}})
+    page.request.put(url+'/api/documents/'+b['id']+'/review-flag',data={'marked':True,'note':'חזרה לספק'})
+    page.goto(url);expect(page.locator('#dropzone')).to_be_visible();page.locator('#company').select_option(company['id'])
+    page.get_by_label('תור בדיקה',exact=True).select_option('amounts')
+    page.get_by_role('button',name='בדיקה מהירה · 1 ממתינים',exact=True).click()
+    expect(page.locator('#field-number')).to_have_value(a['fields']['number'])
+    page.keyboard.press('Escape');expect(page.locator('#modal')).not_to_be_visible()
+    page.get_by_label('תור בדיקה',exact=True).select_option('revisit')
+    page.get_by_role('button',name='בדיקה מהירה · 1 ממתינים',exact=True).click()
+    expect(page.locator('#field-number')).to_have_value(b['fields']['number'])
+    page.keyboard.press('Escape');expect(page.locator('#modal')).not_to_be_visible()
+    page.locator('#select-all').check()
+    page.get_by_role('button',name='תיקון מרוכז · 2',exact=True).click()
+    page.get_by_label('שדה לתיקון',exact=True).select_option('cost_center')
+    page.get_by_label('הערך החדש',exact=True).fill('007')
+    page.get_by_role('button',name='תצוגה מקדימה לפני תיקון',exact=True).click()
+    expect(page.locator('#bulk-review-preview')).to_contain_text('007')
+    assert all(not d['fields']['cost_center'] for d in page.request.get(path+'/documents').json())
+    page.get_by_role('button',name='אישור התיקון שהוצג למסמכים האלה',exact=True).click()
+    expect(page.locator('#modal')).not_to_be_visible()
+    assert all(d['fields']['cost_center']=='007' and d['status']=='review' for d in page.request.get(path+'/documents').json())
+    page.locator(f'[data-open="{b["id"]}"]').click();page.locator('#field-number').press('Enter')
+    expect(page.locator('#modal')).not_to_be_visible()
+    page.get_by_role('button',name='החזרת אישור אחרון לבדיקה',exact=True).click()
+    expect(page.locator('#modal')).to_contain_text(b['fields']['number'])
+    page.get_by_role('button',name='החזרת המסמך הזה לבדיקה',exact=True).click()
+    expect(page.locator('#review-workbench')).to_be_visible()
+    assert next(d for d in page.request.get(path+'/documents').json() if d['id']==b['id'])['status']=='review'
+    page.keyboard.press('Escape');expect(page.locator('#modal')).not_to_be_visible()
+
+
+def test_browser_digit_choice_keys_do_not_replace_typing(browser_app):
+    page,url,directory=browser_app
+    company,path,docs=seed_fast_review(page,url,'בחירת הצעות במקלדת',count=1);doc=docs[0]
+    def proposals(route):
+        body=route.request.post_data_json
+        route.fulfill(json={'number':'00002468','confirmed':False,'region':body['region'],'source_document_id':doc['id'],'proposals':[{'engine':'engine-a','number':'00002468'},{'engine':'engine-b','number':'00002469'}],'warning':'הצעות לבדיקה'})
+    page.route(url+'/api/documents/'+doc['id']+'/check-region',proposals)
+    try:
+        page.goto(url);expect(page.locator('#dropzone')).to_be_visible();page.locator('#company').select_option(company['id'])
+        page.get_by_role('button',name='בדיקה מהירה · 1 ממתינים',exact=True).click()
+        page.get_by_role('button',name='סמן מספר צ׳ק',exact=True).click()
+        image=page.locator('#source-image');image.evaluate('img=>img.decode()');page.locator('.document-preview').evaluate('el=>{el.scrollTop=0}');r=image.bounding_box()
+        page.mouse.move(r['x']+.05*r['width'],r['y']+.04*r['height']);page.mouse.down();page.mouse.move(r['x']+.45*r['width'],r['y']+.18*r['height'],steps=6);page.mouse.up()
+        page.get_by_role('button',name='זיהוי באזור המסומן',exact=True).click()
+        expect(page.locator('#quick-check-choices')).to_be_focused()
+        page.keyboard.press('2')
+        expect(page.get_by_label('מספר צ׳ק 1',exact=True)).to_have_value('00002469')
+        expect(page.get_by_label('בדקתי',exact=True)).not_to_be_checked()
+        page.get_by_label('מספר צ׳ק 1',exact=True).fill('1')
+        expect(page.get_by_label('מספר צ׳ק 1',exact=True)).to_have_value('1')
+        page.keyboard.press('Escape');expect(page.locator('#modal')).not_to_be_visible()
+    finally:page.unroute(url+'/api/documents/'+doc['id']+'/check-region')

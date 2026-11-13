@@ -23,7 +23,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from openpyxl import Workbook, load_workbook
 from PIL import Image, ImageOps
 
-from . import ocr, vision, advanced, learning, model_runtime, learning_transfer
+from . import ocr, vision, advanced, learning, model_runtime, learning_transfer, review_tools
 from .domain import TARGETS, TYPES, FIELDS, EXPORT_FIELDS, extract, issues, money, safe_cell
 
 def uid(): return uuid.uuid4().hex
@@ -723,6 +723,7 @@ def create_app(data_dir=None):
     learning.register(app,locals())
     model_runtime.register(app)
     learning_transfer.register(app,locals())
+    review_tools.register(app,locals())
     return app
 
 app = create_app()
