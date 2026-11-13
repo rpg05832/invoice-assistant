@@ -13,15 +13,19 @@ from PIL import Image,ImageDraw,ImageFont
 
 
 def exercise(command,directory,port,source=False,incoming=None):
-    log_path=directory/'server.log';stream=log_path.open('w',encoding='utf-8')
+    log_path=directory/'server.log'
     env={**os.environ,'INVOICE_DATA_DIR':str(directory/'personal-data')}
     if not source:
         # Exercise real per-user defaults, including Hebrew account directories.
         # A developer's installed Tesseract must never hide missing bundled files.
         for key in ('INVOICE_DATA_DIR','INVOICE_ASSET_DIR','INVOICE_TESSDATA_DIR','TESSDATA_PREFIX'):env.pop(key,None)
         env['LOCALAPPDATA']=str(directory/'משתמש עברי')
-        if os.name=='nt':env['PATH']=os.pathsep.join((str(Path(env['SystemRoot'])/'System32'),env['SystemRoot']))
-    process=subprocess.Popen([*command,'--no-browser','--port',str(port)],stdout=stream,stderr=stream,env=env)
+        if os.name=='nt':
+            system=Path(os.environ.get('SystemRoot','C:/Windows'))
+            env['PATH']=os.pathsep.join((str(system/'System32'),str(system)))
+    stream=log_path.open('w',encoding='utf-8')
+    try:process=subprocess.Popen([*command,'--no-browser','--port',str(port)],stdout=stream,stderr=stream,env=env)
+    except BaseException:stream.close();raise
     client=httpx.Client(base_url=f'http://127.0.0.1:{port}',timeout=30)
     try:
         for _ in range(180):
