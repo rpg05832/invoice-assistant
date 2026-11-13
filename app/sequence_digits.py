@@ -15,7 +15,7 @@ from .paths import assets
 @lru_cache(maxsize=2)
 def load_model(directory):
     root=Path(directory)
-    config=yaml.safe_load((root/'inference.yml').read_text())
+    config=yaml.safe_load((root/'inference.yml').read_text(encoding='utf-8'))
     characters=['blank']+config['PostProcess']['character_dict']+[' ']
     shape=next((v['RecResizeImg']['image_shape'] for v in config['PreProcess']['transform_ops'] if 'RecResizeImg' in v),[3,48,320])
     options=ort.SessionOptions();options.intra_op_num_threads=2;options.inter_op_num_threads=1;options.log_severity_level=3
