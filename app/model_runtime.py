@@ -19,16 +19,20 @@ from fastapi import Body,HTTPException
 from .paths import assets
 from scripts.setup_vision import PROFILES,RUNTIMES
 from scripts.setup_tesseract_rivok import MODELS as RIVOK,REVISION as RIVOK_REVISION
+from scripts.public_models import download_model,mirror_urls
 
 BEST={'heb':'dbaa827aea6bc21215638447f17783a1004987c2d0bf5573d111fee397abdae5','eng':'8280aed0782fe27257a68ea10fe7ef324ca0f8d85bd2fd145d1c2b560bcb66ba'}
-LABELS={'rivok':'heb_rivok · עברית, אנגלית וספרות','best':'Tesseract Best · עברית ואנגלית','glm-ocr':'GLM-OCR · השוואת ספרות','qwen35-08':'Qwen3.5 0.8B · השוואת ספרות','paddle-vl16':'PaddleOCR-VL 1.6 · השוואת ספרות','lighton':'LightOnOCR 2 · השוואת ספרות','digits':'Qwen3-VL 2B · ספרות','multilingual':'Qwen3-VL 4B · הצעות מלל והקשר'}
+LABELS={'rivok':'heb_rivok · עברית, אנגלית וספרות','best':'Tesseract Best · עברית ואנגלית','indra':'Indra RTL · עברית, רישיון נפרד','glm-ocr':'GLM-OCR · השוואת ספרות','qwen35-08':'Qwen3.5 0.8B · השוואת ספרות','paddle-vl16':'PaddleOCR-VL 1.6 · השוואת ספרות','lighton':'LightOnOCR 2 · השוואת ספרות','digits':'Qwen3-VL 2B · ספרות','multilingual':'Qwen3-VL 4B · הצעות מלל והקשר'}
 
 
 def downloads(profile,root):
-    if profile=='rivok':return [(f'https://huggingface.co/Rivok/tesseract-heb-rivok/resolve/{RIVOK_REVISION}/tessdata/{name}.traineddata',root/'tessdata_rivok'/f'{name}.traineddata',sha) for name,sha in RIVOK.items()]
-    if profile=='best':return [(f'https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/{name}.traineddata',root/'tessdata_best'/f'{name}.traineddata',sha) for name,sha in BEST.items()]
-    spec=PROFILES[profile]
-    return [(f"https://huggingface.co/{spec['repo']}/resolve/{spec['revision']}/{name}?download=true",root/'models'/name,sha) for name,sha in spec.get('models',spec.get('files',{})).items()]
+    if profile=='rivok':files=[(root/'tessdata_rivok'/f'{name}.traineddata',sha) for name,sha in RIVOK.items()]
+    elif profile=='best':files=[(root/'tessdata_best'/f'{name}.traineddata',sha) for name,sha in BEST.items()]
+    elif profile=='indra':
+        spec=json.loads((Path(__file__).resolve().parents[1]/'scripts/indra-models.json').read_text(encoding='utf-8'));files=[(root/'models/indra'/name,sha) for name,sha in sorted(spec['files'].items(),key=lambda row:row[0]!='LICENSE')]
+    else:
+        spec=PROFILES[profile];files=[(root/'models'/name,sha) for name,sha in spec.get('models',spec.get('files',{})).items()]
+    return [(mirror_urls(sha)[0],path,sha) for path,sha in files]
 
 
 def local_headers(port):
@@ -46,10 +50,11 @@ class Runtime:
 
     def status(self):
         root=assets();process=self.process;running=self.active if process and process.poll() is None else None
-        return {'profiles':[{'id':key,'label':label,'installed':all(path.is_file() for _,path,_ in downloads(key,root)) and (key in ('best','rivok') or self.binary() is not None),'running':key==running,'digits_only':key not in ('best','rivok','multilingual')} for key,label in LABELS.items()],'job':dict(self.job) if self.job else None,'running':running,'one_model_at_a_time':True}
+        return {'profiles':[{'id':key,'label':label,'installed':all(path.is_file() for _,path,_ in downloads(key,root)) and (key in ('best','rivok','indra') or self.binary() is not None),'running':key==running,'digits_only':key not in ('best','rivok','indra','multilingual')} for key,label in LABELS.items()],'job':dict(self.job) if self.job else None,'running':running,'one_model_at_a_time':True,'download_source':'GitHub'}
 
-    def install(self,profile):
+    def install(self,profile,license_accepted=False):
         if profile not in LABELS:raise HTTPException(400,'מודל לא נתמך')
+        if profile=='indra' and not license_accepted:raise HTTPException(400,'עיינו בתנאי רישיון Indra ואשרו התאמה לשימוש לפני הורדה')
         with self.lock:
             if self.job and self.job['state']=='running':raise HTTPException(409,'הורדת מודל כבר פועלת')
             self.job={'profile':profile,'state':'running','progress':0,'file':''}
@@ -57,23 +62,8 @@ class Runtime:
         return dict(self.job)
 
     def _download(self,url,path,sha,done,total):
-        if path.is_file():
-            with path.open('rb') as stream:
-                if hashlib.file_digest(stream,'sha256').hexdigest()==sha:return
-        path.parent.mkdir(parents=True,exist_ok=True);temporary=path.with_suffix(path.suffix+'.download')
         self.job.update(file=path.name,progress=round(done*100/total))
-        try:
-            with urllib.request.urlopen(url,timeout=90) as response,temporary.open('wb') as output:
-                size=int(response.headers.get('Content-Length',0));received=0;digest=hashlib.sha256()
-                while True:
-                    if self.closed.is_set():raise InterruptedError('ההורדה נעצרה עם סגירת התוכנה')
-                    chunk=response.read(1024*1024)
-                    if not chunk:break
-                    output.write(chunk);digest.update(chunk);received+=len(chunk)
-                    if size:self.job['progress']=min(99,round((done+min(1,received/size))*100/total))
-            if digest.hexdigest()!=sha:raise ValueError('אימות קובץ המודל נכשל')
-            temporary.replace(path)
-        finally:temporary.unlink(missing_ok=True)
+        download_model(sha,path,progress=lambda received,size:self.job.update(progress=min(99,round((done+received/size)*100/total))),cancelled=self.closed.is_set)
 
     def _install(self,profile):
         try:
@@ -143,7 +133,15 @@ def register(app):
     @app.get('/api/local-models')
     def status():return runtime.status()
     @app.post('/api/local-models/{profile}/install')
-    def install(profile:str):return runtime.install(profile)
+    def install(profile:str,payload:dict=Body(default={})):return runtime.install(profile,payload.get('license_accepted') is True)
+    @app.get('/api/local-models/guidance')
+    def guidance():
+        from .model_guidance import guidance as build_guidance
+        return build_guidance(runtime.status())
+    @app.get('/api/local-models/indra/license')
+    def indra_license():
+        from fastapi.responses import PlainTextResponse
+        return PlainTextResponse((Path(__file__).resolve().parents[1]/'third_party/indra-model-LICENSE.txt').read_text(encoding='utf-8'))
     @app.post('/api/local-models/{profile}/start')
     def start(profile:str):return runtime.start(profile)
     @app.post('/api/local-models/stop')

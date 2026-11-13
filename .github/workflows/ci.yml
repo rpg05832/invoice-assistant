@@ -68,3 +68,19 @@ jobs:
           path: |
             test-results/
             dist/*.zip
+  publish_installer:
+    needs: acceptance
+    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'work/full-spec')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - uses: actions/download-artifact@v4
+        with:
+          name: InvoiceAssistant-Setup-Windows-x64
+          path: tested-installer
+      - run: python scripts/publish_installer.py tested-installer
+        env: {GITHUB_TOKEN: '${{ github.token }}'}

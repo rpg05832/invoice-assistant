@@ -8,6 +8,10 @@ import tarfile
 import zipfile
 from pathlib import Path
 from urllib.request import urlopen
+try:
+    from .public_models import download_model
+except ImportError:
+    from public_models import download_model
 
 ROOT=Path(__file__).resolve().parents[1]
 PROFILES={
@@ -25,13 +29,8 @@ RUNTIMES={
 
 
 def download(url,target,expected):
-    def digest(path):
-        with path.open('rb') as stream:return hashlib.file_digest(stream,'sha256').hexdigest()
-    if target.is_file() and digest(target)==expected:print(target.name+': verified');return
-    target.parent.mkdir(parents=True,exist_ok=True);temporary=target.with_suffix(target.suffix+'.download')
-    with urlopen(url,timeout=120) as response,temporary.open('wb') as output:shutil.copyfileobj(response,output,1024*1024)
-    if digest(temporary)!=expected:temporary.unlink(missing_ok=True);raise RuntimeError('Integrity verification failed: '+target.name)
-    temporary.replace(target);print(target.name+': installed and verified')
+    # Upstream URLs remain attribution metadata; all network reads use GitHub mirrors.
+    download_model(expected,target);print(target.name+': GitHub download verified')
 
 
 def main():

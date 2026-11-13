@@ -34,6 +34,14 @@ def exercise(command,directory,port,source=False,incoming=None):
         workspace=client.get(f"/api/companies/{company['id']}/review-workspace").json()
         assert workspace['flags']==workspace['snippets']==[] and workspace['session'] is None
         assert client.post('/api/review-calculator',json={'mode':'total','amount':'118.00','rate':'18'}).json()['net']=='100.00'
+        assert client.get('/api/local-models/guidance').json()['download_source']=='GitHub'
+        if not incoming:
+            installed=client.post('/api/local-models/rivok/install');assert installed.is_success,installed.text
+            for _ in range(360):
+                download=client.get('/api/local-models').json()['job']
+                if download['state']!='running':break
+                time.sleep(.25)
+            assert download['state']=='completed',download
         if incoming:
             preview=client.post(prefix+'/transfer/preview',files={'file':('team-learning.zip',incoming,'application/zip')});assert preview.is_success,preview.text
             result=client.post(prefix+'/transfer/import',json={'token':preview.json()['token'],'confirmed':True,'approve_examples':True,'categories':{'examples':True,'models':True},'supplier_mapping':{},'writer_mapping':{}});assert result.is_success,result.text

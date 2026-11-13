@@ -481,3 +481,23 @@ def test_browser_digit_choice_keys_do_not_replace_typing(browser_app):
         expect(page.get_by_label('מספר צ׳ק 1',exact=True)).to_have_value('1')
         page.keyboard.press('Escape');expect(page.locator('#modal')).not_to_be_visible()
     finally:page.unroute(url+'/api/documents/'+doc['id']+'/check-region')
+
+
+def test_browser_model_download_guidance_and_indra_terms(browser_app):
+    page,url,directory=browser_app
+    company,path,_=seed_fast_review(page,url,'מדריך מודלים',count=1)
+    page.goto(url);expect(page.locator('#dropzone')).to_be_visible();page.locator('#company').select_option(company['id'])
+    page.locator('nav [data-view="connections"]').click()
+    expect(page.locator('#model-download-guide')).to_contain_text('מה כדאי להוריד?')
+    expect(page.locator('#model-download-guide')).to_contain_text('כבר כלול במתקין')
+    expect(page.locator('.model-hardware')).to_contain_text('המחשב שמפעיל את התוכנה')
+    expect(page.get_by_role('link',name='קובצי המודלים והמקורות ב־GitHub',exact=True)).to_have_attribute('href','https://github.com/rpg05832/invoice-assistant/releases/tag/public-models-v1')
+    page.get_by_text('מה לומד מהתיקונים שלי?',exact=True).click()
+    expect(page.locator('#model-download-guide')).to_contain_text('מודלי הבסיס נשארים מקוריים')
+    page.screenshot(path='test-results/model-download-guide.png',full_page=True)
+    # Installing restricted weights opens terms instead of starting a background download.
+    page.locator('#public-local-models [data-public-install="indra"]').click()
+    expect(page.locator('#model-indra-form')).to_contain_text('רישיון המודל כולל תנאי שימוש')
+    expect(page.locator('#model-indra-form [name=accepted]')).not_to_be_checked()
+    page.get_by_role('button',name='סגירה',exact=True).last.click()
+    assert page.request.get(path+'/recognition-settings').json()['mode']=='off'
