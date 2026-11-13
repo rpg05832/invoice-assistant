@@ -13,7 +13,7 @@ def main():
     if os.name!='nt':raise SystemExit('Test installation on Windows.')
     installer=Path(args.installer).resolve()
     with tempfile.TemporaryDirectory() as temp:
-        root=Path(temp);target=root/'installed';personal=root/'profile';personal.mkdir()
+        root=Path(temp);target=root/'תוכנה בעברית';personal=root/'פרופיל עברי';personal.mkdir()
         env={**os.environ,'LOCALAPPDATA':str(personal)}
         subprocess.run([str(installer),'/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/NOICONS','/TASKS=','/DIR='+str(target),'/LOG='+str(root/'install.log')],env=env,check=True,timeout=180)
         executable=target/'InvoiceAssistant.exe';assert executable.is_file(),'Installed executable missing'

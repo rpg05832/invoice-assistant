@@ -88,3 +88,22 @@ def test_indra_download_requires_terms_and_offline_license_is_available(client):
 def test_download_redirect_cannot_leave_github():
     request=models.urllib.request.Request(models.RELEASE_URL+'weights.onnx')
     with pytest.raises(ValueError,match='GitHub'):models.GitHubRedirect().redirect_request(request,None,302,'redirect',{},'https://huggingface.co/file')
+
+
+def test_guide_reports_missing_base_instead_of_claiming_hebrew_installed(monkeypatch,tmp_path):
+    monkeypatch.setattr(model_guidance,'assets',lambda:tmp_path)
+    monkeypatch.setattr(model_guidance.ocr,'capabilities',lambda:{'hebrew':False,'available':False,'languages':[],'reason':'binary_missing'})
+    value=model_guidance.base_status()
+    assert not value['ocr']['hebrew'] and not any(row['ready'] for row in value['components'][:-1])
+    assert 'אינו זמין' in value['message'] and 'Windows' in value['next_step']
+    base=downloads('base',tmp_path)
+    assert len(base)==8 and any(path.name=='heb.traineddata' for _,path,_ in base)
+
+
+def test_task_rankings_and_free_memory_requirements(monkeypatch):
+    monkeypatch.setattr(model_guidance,'hardware',lambda:{'ram_gib':32,'available_gib':3.5,'logical_cpus':12,'architecture':'x64','gpu_required':False})
+    value=model_guidance.guidance({'profiles':[{'id':key,'installed':False} for key in LABELS]})
+    assert len(value['task_rankings'])==3 and 'סדר ניסיון' in value['ranking_basis']
+    profiles={p['id']:p for p in value['profiles']}
+    assert profiles['glm-ocr']['recommended'] and not profiles['multilingual']['recommended']
+    assert profiles['multilingual']['free_ram_gib']==6 and profiles['paddle-vl16']['free_ram_gib']==5

@@ -3,6 +3,18 @@ import os
 import platform
 from pathlib import Path
 from scripts.public_models import manifest
+from . import ocr
+from .paths import assets
+
+
+def base_status():
+    root=assets();cap=ocr.capabilities()
+    records=[{'label':'Tesseract Fast · עברית ואנגלית','ready':cap['hebrew'],'detail':'עברית זמינה במנוע הפעיל' if cap['hebrew'] else 'עברית אינה זמינה במנוע הפעיל'}]
+    for label,paths in [('PaddleOCR v5 · ספרות',['models/paddle-digits/inference.onnx','models/paddle-digits/inference.yml']),('PaddleOCR v6 Small · ספרות ואימון אישי',['models/PP-OCRv6_small_rec_onnx/inference.onnx','models/PP-OCRv6_small_rec_onnx/inference.yml']),('MNIST · ספרות',['models/mnist-12.onnx'])]:
+        present=all((root/p).is_file() for p in paths)
+        records.append({'label':label,'ready':present,'detail':'קובצי הבסיס נמצאים במחשב' if present else 'חסרים קובצי בסיס; אפשר לתקן מהכפתור למטה'})
+    records.append({'label':'אימון ספרות אישי מקומי','ready':True,'detail':'כלי האימון כלול; גרסה אישית נוצרת מהתיקונים המאושרים שלכם'})
+    return {'ocr':cap,'components':records,'repair_available':True,'message':'מנוע העברית פעיל' if cap['hebrew'] else 'מנוע העברית אינו זמין בהתקנה הפעילה','next_step':'אפשר לבצע בדיקת קריאה של דוגמה בעברית.' if cap['hebrew'] else 'הפעילו בדיקת ותיקון קובצי הבסיס. אם המנוע עצמו חסר או אינו עולה, התקינו את חבילת Windows המעודכנת.'}
 
 
 def hardware():
@@ -43,7 +55,13 @@ def guidance(status):
     profiles=[]
     for ident,priority,title,why,minimum,role in specifications:
         size=sum(r['size'] for r in files if ident in r.get('profiles',[r['profile']]))
-        suitable=minimum<8 or (ram>=minimum and free>=3 and machine['logical_cpus']>=4)
-        profiles.append({'id':ident,'priority':priority,'title':title,'why':why,'role':role,'download_bytes':size,'installed':installed[ident],'recommended':suitable,'minimum_ram_gib':minimum,'fit':('מתאים לניסוי במחשב הזה' if suitable else 'התחילו בבסיס ובמודלים הקטנים; זה מסלול למחשב עם יותר כוח עיבוד או זיכרון פנוי')})
+        required_free=6 if minimum>=16 else 5 if minimum>=12 else 3 if minimum>=8 else .5
+        suitable=minimum<8 or (ram>=minimum-.5 and free>=required_free and machine['logical_cpus']>=4)
+        speed='מהיר יחסית · מתאים לעבודה שוטפת' if minimum<8 else 'בינוני · לבדיקה ממוקדת' if ident=='indra' else 'איטי יותר על מעבד · חיתוך מספר בכל פעם' if minimum<12 else 'איטי על מעבד · ניסוי בדוגמאות קשות'
+        profiles.append({'id':ident,'priority':priority,'title':title,'why':why,'role':role,'download_bytes':size,'installed':installed[ident],'recommended':suitable,'minimum_ram_gib':minimum,'free_ram_gib':required_free,'logical_cpus':1 if minimum<8 else 4,'speed':speed,'fit':('מתאים לניסוי במחשב הזה' if suitable else 'התחילו בבסיס ובמודלים הקטנים; זה מסלול למחשב עם יותר כוח עיבוד או זיכרון פנוי')})
     next_model=next((p['id'] for p in profiles if p['recommended'] and not p['installed']),None)
-    return {'hardware':machine,'tier':tier,'tier_label':{'light':'מסלול קל וחסכוני','balanced':'מסלול מאוזן','strong':'אפשר גם ניסויים במודלים גדולים'}[tier],'profiles':profiles,'recommended_next':next_model,'download_source':'GitHub','base_included':['Tesseract Fast · עברית ואנגלית','PaddleOCR v5 + v6 Small · ספרות','MNIST · ספרות','אימון ספרות אישי מקומי'],'learning_scope':'האימון מעדכן את מודל הספרות האישי; תיקוני ספקים ומלל נשמרים כהתאמות וכללים. מודלי הבסיס נשארים מקוריים.'}
+    tasks=[
+        {'title':'עברית מודפסת בחשבוניות','order':['Tesseract Fast · כבר כלול','heb_rivok · התוספת הראשונה','Tesseract Best · השוואה נוספת','Indra RTL · ניסוי נוסף אחרי בדיקת תנאי הרישיון'],'why':'Fast הוא נקודת התחלה מהירה. rivok קטן ומתמקד בעברית; Best מספק חלופה נוספת. השוו את מספר התיקונים ואת זמן הקריאה באותם מסמכים.'},
+        {'title':'מספרי צ׳קים וספרות בכתב יד','order':['PaddleOCR v6 Small ו־v5 + המודל האישי לאחר אימון ובדיקה · כבר כלולים','MNIST · הצעה נוספת לספרות מופרדות, כבר כלול','GLM-OCR · ההורדה הראשונה להשוואת חיתוכים','Qwen3.5 0.8B · חלופה קומפקטית','PaddleOCR-VL / LightOnOCR / Qwen3-VL 2B · ניסויים נוספים'],'why':'מנועי הרצף קוראים מספר שלם בלי לפצל כל ספרה. המודל האישי לומד מהכתבים ומהתיקונים המאושרים שלכם. מנועי הראייה מוסיפים הצעה לחיתוכים קשים, כגון קו מתחת לספרה.'},
+        {'title':'מלל והקשר של עמוד שלם','order':['Tesseract Fast / rivok / Best · הקריאה השוטפת בעברית','Qwen3-VL 4B · השוואת הקשר במחשב חזק'],'why':'Qwen 4B מיועד כאן להצעות הקשר. בודקים מלל, סדר מילים ומספרים מול המקור; ההצעה מוצגת לצד הנתונים לתיקון מהיר.'}]
+    return {'hardware':machine,'tier':tier,'tier_label':{'light':'מסלול קל וחסכוני','balanced':'מסלול מאוזן','strong':'אפשר גם ניסויים במודלים גדולים'}[tier],'profiles':profiles,'recommended_next':next_model,'download_source':'GitHub','base_status':base_status(),'base_included':['Tesseract Fast · עברית ואנגלית','PaddleOCR v5 + v6 Small · ספרות','MNIST · ספרות','אימון ספרות אישי מקומי'],'task_rankings':tasks,'ranking_basis':'זהו סדר ניסיון מומלץ לפי תפקיד, גודל ודרישות מחשב. דירוג דיוק אישי נקבע לפי תוצאות על המסמכים והכתבים שלכם. במסך הלמידה מוצגים מספרי ההצלחות והבדיקות בפועל.','requirements_basis':'דרישות הזיכרון הן אומדן שמרני לניסוי על מעבד x64. המהירות תלויה במעבד, בגודל התמונה ובעומס; גודל ההורדה שונה מצריכת הזיכרון בזמן עבודה.','learning_scope':'האימון מעדכן את מודל הספרות האישי; תיקוני ספקים ומלל נשמרים כהתאמות וכללים. מודלי הבסיס נשארים מקוריים.'}

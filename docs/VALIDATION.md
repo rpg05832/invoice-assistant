@@ -34,3 +34,13 @@ A private 13-page scanned invoice sample and two user-confirmed handwritten chec
 99% is a target, not a measured product result. The metrics screen measures exact fields and complete documents before editing and after approval, separates engine results, reports coverage, and includes a 95% Wilson lower bound. A curated representative corpus is required before claiming that target.
 
 Detailed local model trials, limitations, licenses and download links: [model research](MODEL_RESEARCH.md).
+
+## Windows Hebrew profile regression
+
+The previously published installer contained `heb`, `eng`, and `osd`, but its bundled Tesseract failed with absolute Hebrew model-directory arguments. Windows diagnostic run [43402011376](https://github.com/rpg05832/invoice-assistant/actions/runs/43402011376) reproduced an engine exit with narrow-argument path corruption; the exact same executable and weights listed all three languages when run from the Unicode working directory with `--tessdata-dir .`.
+
+OCR now uses a Unicode executable/working directory and ASCII relative arguments. Unrelated Unicode image filenames are staged with their weights in a private temporary workspace and deleted afterward. Frozen applications select their own bundled engine, never an installed system engine. The installed and standalone smoke checks use Hebrew installation and user-profile directories, default per-user data paths, and a system-only PATH. They require reading actual synthetic Hebrew text and leading-zero numerals through the self-test endpoint, in addition to listing languages. This is a compatibility regression check, not a handwriting accuracy benchmark.
+
+The guide reports runtime Hebrew availability separately from bundled file presence, provides a local reading test and SHA-256-verified base-file repair, and gives task-specific trial rankings with explicit RAM, free-memory, CPU and speed guidance.
+
+Local validation after this fix: 114 tests passed, including the browser guide/self-test interaction and Unicode-path command regressions. The source smoke also passed actual Hebrew reading, private training, clean-install separation, GitHub downloading and explicit learning transfer. Windows packaged verification is performed by the corresponding commit's CI run before publishing the new installer.

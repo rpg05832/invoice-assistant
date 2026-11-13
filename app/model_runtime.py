@@ -20,13 +20,19 @@ from .paths import assets
 from scripts.setup_vision import PROFILES,RUNTIMES
 from scripts.setup_tesseract_rivok import MODELS as RIVOK,REVISION as RIVOK_REVISION
 from scripts.public_models import download_model,mirror_urls
+from scripts.setup_ocr import MODELS as FAST
+from scripts.setup_digits import SHA256 as DIGIT_SHA
 
 BEST={'heb':'dbaa827aea6bc21215638447f17783a1004987c2d0bf5573d111fee397abdae5','eng':'8280aed0782fe27257a68ea10fe7ef324ca0f8d85bd2fd145d1c2b560bcb66ba'}
-LABELS={'rivok':'heb_rivok · עברית, אנגלית וספרות','best':'Tesseract Best · עברית ואנגלית','indra':'Indra RTL · עברית, רישיון נפרד','glm-ocr':'GLM-OCR · השוואת ספרות','qwen35-08':'Qwen3.5 0.8B · השוואת ספרות','paddle-vl16':'PaddleOCR-VL 1.6 · השוואת ספרות','lighton':'LightOnOCR 2 · השוואת ספרות','digits':'Qwen3-VL 2B · ספרות','multilingual':'Qwen3-VL 4B · הצעות מלל והקשר'}
+LABELS={'base':'בדיקת ותיקון קובצי הבסיס · עברית וספרות','rivok':'heb_rivok · עברית, אנגלית וספרות','best':'Tesseract Best · עברית ואנגלית','indra':'Indra RTL · עברית, רישיון נפרד','glm-ocr':'GLM-OCR · השוואת ספרות','qwen35-08':'Qwen3.5 0.8B · השוואת ספרות','paddle-vl16':'PaddleOCR-VL 1.6 · השוואת ספרות','lighton':'LightOnOCR 2 · השוואת ספרות','digits':'Qwen3-VL 2B · ספרות','multilingual':'Qwen3-VL 4B · הצעות מלל והקשר'}
 
 
 def downloads(profile,root):
-    if profile=='rivok':files=[(root/'tessdata_rivok'/f'{name}.traineddata',sha) for name,sha in RIVOK.items()]
+    if profile=='base':
+        files=[(root/'tessdata'/f'{name}.traineddata',sha) for name,sha in FAST.items()]+[(root/'models/mnist-12.onnx',DIGIT_SHA)]
+        spec=json.loads((Path(__file__).resolve().parents[1]/'scripts/sequence-models.json').read_text(encoding='utf-8'))
+        files += [(root/'models'/model['directory']/name,sha) for model in spec.values() for name,sha in model['files'].items()]
+    elif profile=='rivok':files=[(root/'tessdata_rivok'/f'{name}.traineddata',sha) for name,sha in RIVOK.items()]
     elif profile=='best':files=[(root/'tessdata_best'/f'{name}.traineddata',sha) for name,sha in BEST.items()]
     elif profile=='indra':
         spec=json.loads((Path(__file__).resolve().parents[1]/'scripts/indra-models.json').read_text(encoding='utf-8'));files=[(root/'models/indra'/name,sha) for name,sha in sorted(spec['files'].items(),key=lambda row:row[0]!='LICENSE')]
@@ -50,7 +56,7 @@ class Runtime:
 
     def status(self):
         root=assets();process=self.process;running=self.active if process and process.poll() is None else None
-        return {'profiles':[{'id':key,'label':label,'installed':all(path.is_file() for _,path,_ in downloads(key,root)) and (key in ('best','rivok','indra') or self.binary() is not None),'running':key==running,'digits_only':key not in ('best','rivok','indra','multilingual')} for key,label in LABELS.items()],'job':dict(self.job) if self.job else None,'running':running,'one_model_at_a_time':True,'download_source':'GitHub'}
+        return {'profiles':[{'id':key,'label':label,'installed':all(path.is_file() for _,path,_ in downloads(key,root)) and (key in ('best','rivok','indra','base') or self.binary() is not None),'running':key==running,'digits_only':key not in ('best','rivok','indra','multilingual','base')} for key,label in LABELS.items()],'job':dict(self.job) if self.job else None,'running':running,'one_model_at_a_time':True,'download_source':'GitHub'}
 
     def install(self,profile,license_accepted=False):
         if profile not in LABELS:raise HTTPException(400,'מודל לא נתמך')
@@ -138,6 +144,10 @@ def register(app):
     def guidance():
         from .model_guidance import guidance as build_guidance
         return build_guidance(runtime.status())
+    @app.post('/api/ocr/self-test')
+    def ocr_self_test():
+        from .ocr import self_test
+        return self_test()
     @app.get('/api/local-models/indra/license')
     def indra_license():
         from fastapi.responses import PlainTextResponse

@@ -15,7 +15,12 @@ from PIL import Image,ImageDraw,ImageFont
 def exercise(command,directory,port,source=False,incoming=None):
     log_path=directory/'server.log';stream=log_path.open('w',encoding='utf-8')
     env={**os.environ,'INVOICE_DATA_DIR':str(directory/'personal-data')}
-    if not source:env['INVOICE_ASSET_DIR']=str(directory.parent/'generic-assets')
+    if not source:
+        # Exercise real per-user defaults, including Hebrew account directories.
+        # A developer's installed Tesseract must never hide missing bundled files.
+        for key in ('INVOICE_DATA_DIR','INVOICE_ASSET_DIR','INVOICE_TESSDATA_DIR','TESSDATA_PREFIX'):env.pop(key,None)
+        env['LOCALAPPDATA']=str(directory/'משתמש עברי')
+        if os.name=='nt':env['PATH']=os.pathsep.join((str(Path(env['SystemRoot'])/'System32'),env['SystemRoot']))
     process=subprocess.Popen([*command,'--no-browser','--port',str(port)],stdout=stream,stderr=stream,env=env)
     client=httpx.Client(base_url=f'http://127.0.0.1:{port}',timeout=30)
     try:
@@ -28,6 +33,8 @@ def exercise(command,directory,port,source=False,incoming=None):
             time.sleep(.25)
         else:raise AssertionError('Standalone server did not become ready')
         assert response.json()['ocr']['hebrew']
+        reading=client.post('/api/ocr/self-test');assert reading.is_success and reading.json()['ok'],reading.text
+        assert 'חשבונית' in reading.json()['sample_text'] and '00001234' in reading.json()['sample_text']
         assert client.get('/api/companies').json()==[], 'Fresh install inherited company data'
         company=client.post('/api/companies',json={'name':'Standalone personal test'}).json();prefix=f"/api/companies/{company['id']}/learning"
         fresh=client.get(prefix).json();assert fresh['examples']==fresh['models']==fresh['writers']==[]
@@ -76,7 +83,7 @@ def main():
     parser=argparse.ArgumentParser();parser.add_argument('executable',nargs='?');parser.add_argument('--source',action='store_true');args=parser.parse_args()
     if not args.source and not args.executable:parser.error('Provide the packaged executable or --source')
     command=[sys.executable,str(Path(__file__).resolve().parents[1]/'run.py')] if args.source else [str(Path(args.executable).resolve())]
-    with tempfile.TemporaryDirectory() as temp:
+    with tempfile.TemporaryDirectory(prefix='חשבוניות-') as temp:
         root=Path(temp);identities=[];incoming=None
         for index in range(2):
             directory=root/f'install-{index}';directory.mkdir();identity,incoming=exercise(command,directory,8877+index,args.source,incoming);identities.append(identity)

@@ -41,9 +41,8 @@ def tokens(path):
     if not cap['available']: return []
     langs='+'.join(l for l in ('heb','eng') if l in cap['languages'])
     if not langs: return []
-    command=['tesseract',str(path),'stdout',*ocr.language_args(),'-l',langs,'--psm','3','tsv']
     try:
-        result=subprocess.run(command,capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=60,env={**os.environ,'OMP_THREAD_LIMIT':'2'})
+        result=ocr.run_tesseract([Path(path),'stdout','-l',langs,'--psm','3','tsv'],timeout=60)
         if result.returncode:return []
         with Image.open(path) as image:w,h=image.size
         output=[]
