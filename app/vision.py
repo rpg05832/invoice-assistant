@@ -11,11 +11,14 @@ import numpy as np
 from PIL import Image, ImageOps
 from fastapi import HTTPException
 from . import ocr
+from .paths import assets
 
 
 def preprocess(source, destination):
     with Image.open(source) as image:
         image = ImageOps.exif_transpose(image).convert('RGB')
+        quarter=ocr.orientation(source)
+        if quarter:image=image.rotate(-quarter,expand=True,fillcolor='white')
         array = np.array(image)
     gray = cv2.cvtColor(array, cv2.COLOR_RGB2GRAY)
     small = cv2.resize(gray, None, fx=min(1,1600/gray.shape[1]), fy=min(1,1600/gray.shape[1]))
@@ -28,9 +31,9 @@ def preprocess(source, destination):
             if abs(angle)<12: angles.append(angle)
     angle=float(np.median(angles)) if len(angles)>=3 else 0
     corrected=image.rotate(angle,expand=True,fillcolor='white',resample=Image.Resampling.BICUBIC) if abs(angle)>.2 else image
-    corrected=ImageOps.autocontrast(ImageOps.grayscale(corrected)).convert('RGB')
+    corrected=ImageOps.autocontrast(corrected.convert('RGB'))
     corrected.save(destination,'PNG')
-    return {'deskew_degrees':round(angle,2),'contrast':'autocontrast'}
+    return {'quarter_rotation':quarter,'deskew_degrees':round(angle,2),'contrast':'autocontrast'}
 
 
 def tokens(path):
@@ -92,7 +95,7 @@ def digit_proposal(path):
 
     Confidence is per glyph, not a guarantee for a complete check number.
     """
-    model=Path(os.environ.get('INVOICE_DIGIT_MODEL',Path(__file__).resolve().parents[1]/'data/models/mnist-12.onnx'))
+    model=Path(os.environ.get('INVOICE_DIGIT_MODEL',assets()/'models/mnist-12.onnx'))
     if not model.is_file():return {'engine':'mnist-onnx','available':False,'number':'','warning':'מודל הספרות לא מותקן'}
     import onnxruntime as ort
     with Image.open(path) as image:gray=np.array(ImageOps.grayscale(image))
@@ -119,8 +122,20 @@ def digit_proposal(path):
     return {'engine':'mnist-onnx','available':True,'number':''.join(digits),'confidence':min(confidence),'glyph_confidences':confidence,'boxes':boxes,'confirmed':False,'warning':'מודל ספרות בודדות עם הפרדת תווים. ספרות נוגעות או חופפות מחייבות תיקון; יש לאשר רצף מלא מול המקור.'}
 
 
-def suggested_checks(path,excluded=()):
-    words=tokens(path);candidates=[]
+def suggested_checks(path,excluded=(),words=None):
+    words=tokens(path) if words is None else words
+    candidates=[]
+    regions=colored_digit_regions(path)
+    import tempfile
+    from .sequence_digits import recognize as sequence_recognize
+    with Image.open(path) as image:
+        for region in regions:
+            x,y,w,h=[region[k] for k in ('x','y','w','h')]
+            with tempfile.TemporaryDirectory() as temp:
+                cropped=Path(temp)/'crop.png';image.crop((round(x*image.width),round(y*image.height),round((x+w)*image.width),round((y+h)*image.height))).save(cropped)
+                proposals=[sequence_recognize(cropped,model) for model in ('paddle-v6-small','paddle-v5')]
+            proposal=max((p for p in proposals if p.get('number')),key=lambda p:p.get('confidence',0),default={})
+            candidates.append({'number':proposal.get('number',''),'region':{k:region[k] for k in ('x','y','w','h','rotation')},'engine':proposal.get('engine','colored-ink'),'proposals':proposals,'confirmed':False,'reason':region['reason']})
     for word in words:
         text=word['text'].strip('.,:;#')
         if not text.isascii() or not text.isdigit() or not 4<=len(text)<=12 or text in excluded:continue
@@ -133,7 +148,7 @@ def suggested_checks(path,excluded=()):
 
 
 def indra_recognize(path):
-    model_dir=Path(__file__).resolve().parents[1]/'data/models/indra'
+    model_dir=assets()/'models/indra'
     if not (model_dir/'rec_rtl.onnx').is_file():return {'available':False,'engine':'indra-rtl','text':'','warning':'מודל Indra RTL אינו מותקן'}
     try:
         import indra_ocr
@@ -165,3 +180,29 @@ def pdf_items(page):
             try:output.extend(validate_items([value]))
             except HTTPException:continue
     return output
+
+
+def colored_digit_regions(path):
+    """Locate blue/purple annotations while retaining original-page coordinates."""
+    with Image.open(path) as image:rgb=np.array(image.convert('RGB'))
+    scale=min(1,1600/rgb.shape[1]);rgb=cv2.resize(rgb,None,fx=scale,fy=scale)
+    hsv=cv2.cvtColor(rgb,cv2.COLOR_RGB2HSV)
+    mask=cv2.inRange(hsv,np.array([85,35,35]),np.array([175,255,250]))
+    n,_,stats,_=cv2.connectedComponentsWithStats(mask,8)
+    height,width=mask.shape
+    parts=[tuple(map(int,(x,y,w,h,area))) for x,y,w,h,area in stats[1:] if area>=5 and h>=3 and area<width*height*.05]
+    groups=[]
+    for x,y,w,h,area in sorted(parts,key=lambda p:p[0]):
+        joined=False
+        for group in groups:
+            gx,gy,gw,gh=group
+            overlap=min(y+h,gy+gh)-max(y,gy)
+            if overlap>min(h,gh)*.2 and x-(gx+gw)<max(h,gh)*1.2 and gx-(x+w)<max(h,gh)*1.2:
+                right=max(gx+gw,x+w);bottom=max(gy+gh,y+h);group[:]=[min(gx,x),min(gy,y),right-min(gx,x),bottom-min(gy,y)];joined=True;break
+        if not joined:groups.append([x,y,w,h])
+    results=[]
+    for x,y,w,h in groups:
+        if w<width*.045 or h<height*.008 or w/h<1.2 or h>height*.15:continue
+        pad=max(5,round(h*.18));left=max(0,x-pad);top=max(0,y-pad);right=min(width,x+w+pad);bottom=min(height,y+h+pad)
+        results.append({'x':left/width,'y':top/height,'w':(right-left)/width,'h':(bottom-top)/height,'rotation':0,'reason':'דיו כחול או סגול שנוסף לסריקה; נדרש לוודא שמדובר במספר צ׳ק'})
+    return sorted(results,key=lambda r:(r['y'],r['x']))[:30]

@@ -8,7 +8,7 @@ TARGETS = ['חשבשבת H-ERP', 'חשבשבת H-WEB', 'ריווחית', 'ליר
            'כספית בענן', 'Morning', 'iCount', 'COMAX', 'Manager Premium', 'לינט',
            'EasyCount', 'Dynamics 365 Business Central', 'Oracle NetSuite', 'Odoo', 'אחר']
 TYPES = {'invoice': 'חשבונית מס', 'tax_receipt': 'חשבונית מס־קבלה',
-         'credit': 'זיכוי', 'receipt': 'קבלה', 'proforma': 'חשבון עסקה', 'delivery': 'תעודת משלוח'}
+         'credit': 'זיכוי', 'receipt': 'קבלה', 'proforma': 'חשבון עסקה', 'delivery': 'תעודת משלוח', 'other':'מסמך לבדיקה'}
 FIELDS = ['supplier_name', 'supplier_tax_id', 'recipient_tax_id', 'number', 'date',
           'due_date', 'net', 'vat', 'total', 'currency', 'allocation', 'delivery_refs',
           'expense_account', 'notes', 'kind', 'purpose', 'transaction_type', 'vat_account', 'cost_center', 'project']
@@ -59,37 +59,15 @@ def issues(fields, supplier, checks, company):
         if not check.get('confirmed'): out.append('יש לאשר כל מספר צ׳ק')
     return list(dict.fromkeys(out))
 
-def extract(text):
-    """Conservative local suggestions; never approves a document or invents amounts."""
-    result = dict.fromkeys(FIELDS, '')
-    result.update(currency='ILS', kind='invoice', purpose='supplier_invoice')
-    if 'זיכוי' in text: result['kind'] = 'credit'
-    elif 'תעודת משלוח' in text: result['kind'] = 'delivery'
-    elif 'חשבון עסקה' in text: result['kind'] = 'proforma'
-    elif 'קבלה' in text: result['kind'] = 'tax_receipt' if 'חשבונית' in text else 'receipt'
-    patterns = {
-        'number': r'(?:חשבונית(?:\s+מס)?|Invoice)\s*(?:מספר|מס[׳\'\.]?|No\.?)?\s*[:#-]?\s*([A-Za-z0-9][A-Za-z0-9/\-]{1,29})',
-        'supplier_tax_id': r'(?:עוסק(?:\s+מורשה)?|ח[.״\"]?פ[.״\"]?|VAT\s*ID)\s*[:#]?\s*(\d{9})',
-        'allocation': r'(?:מספר\s+הקצאה)\s*[:#]?\s*(\d+)',
-        'net': r'(?:לפני\s+מע[״\"]?מ|Subtotal)\s*[:₪]?\s*(-?[\d,]+\.\d{2})',
-        'vat': r'(?:סכום\s+מע[״\"]?מ|VAT\s+amount)\s*[:₪]?\s*(-?[\d,]+\.\d{2})',
-        'total': r'(?:סה[״\"]?כ(?:\s+לתשלום)?|סך\s+הכול|\bTotal)\s*[:₪]?\s*(-?[\d,]+\.\d{2})',
-    }
-    for field, pattern in patterns.items():
-        match = re.search(pattern, text, re.I)
-        if match: result[field] = match[1].replace(',', '')
-    match = re.search(r'\b(\d{2})[/.](\d{2})[/.](\d{4})\b', text)
-    if match:
-        try: result['date'] = date(int(match[3]), int(match[2]), int(match[1])).isoformat()
-        except ValueError: pass
-    else:
-        match = re.search(r'\b\d{4}-\d{2}-\d{2}\b', text)
-        if match: result['date'] = match[0]
-    return result
+def extract(text, tokens=None, company_tax_id=''):
+    from .extraction import parse
+    return parse(text,FIELDS,tokens,company_tax_id)
+
 
 def safe_cell(value):
     """Prevent spreadsheet formulas in user/OCR controlled strings."""
     text = str(value or '')
+    if re.fullmatch(r'-?[0-9]+(?:\.[0-9]+)?',text):return text
     if text.lstrip().startswith(('=', '+', '-', '@')) or text.startswith(('\t', '\r', '\n')):
         return "'" + text
     return text

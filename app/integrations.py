@@ -133,11 +133,45 @@ def register(app,s):
         with db() as c:
             company(c,company_id);old=settings(c,company_id,'integration_settings')
             value={'mode':mode,'endpoint':endpoint,'method':method,'mapping':mapping,'success':success,'reference_path':str(payload.get('reference_path',''))[:200],'encrypted_key':old.get('encrypted_key',''),'auth_header':str(payload.get('auth_header','Authorization'))[:100],'auth_prefix':str(payload.get('auth_prefix','Bearer '))[:100]}
+            value.update(read_endpoint=str(payload.get('read_endpoint',''))[:2000],read_kind=str(payload.get('read_kind','suppliers')),read_items_path=str(payload.get('read_items_path',''))[:200],read_mapping=payload.get('read_mapping',{}))
+            if value['read_endpoint'] and urlsplit(value['read_endpoint']).scheme!='https':fail('כתובת קריאת רשימות חייבת להיות HTTPS')
+            if not isinstance(value['read_mapping'],dict) or len(value['read_mapping'])>50 or any(not isinstance(v,str) or len(v)>200 for v in value['read_mapping'].values()):fail('מיפוי קריאת רשימות לא תקין')
             if payload.get('clear_key'):value['encrypted_key']=''
             if payload.get('api_key'):value['encrypted_key']=secret_cipher(data).encrypt(str(payload['api_key']).encode()).decode()
             c.execute('INSERT INTO integration_settings VALUES(?,?) ON CONFLICT(company_id) DO UPDATE SET value=excluded.value',(company_id,encode(value)))
             c.execute('DELETE FROM verification WHERE company_id=?',(company_id,));audit(c,company_id,None,'integration_settings_saved',{'mode':mode})
         return {'ok':True}
+
+    @app.post('/api/companies/{company_id}/integration/read')
+    def read_index(company_id:str,payload:dict=Body(...)):
+        if payload.get('confirmed') is not True:fail('קריאת נתונים מהמערכת דורשת פעולה מפורשת')
+        with db() as c:
+            company(c,company_id);config=settings(c,company_id,'integration_settings')
+            endpoint=config.get('read_endpoint')
+            if config.get('mode')!='manual' or not endpoint:fail('לא הוגדר חיבור לקריאת רשימות')
+            key=secret_cipher(data).decrypt(config['encrypted_key'].encode()).decode() if config.get('encrypted_key') else ''
+        headers={}
+        if key:headers[config['auth_header']]=config['auth_prefix']+key
+        try:
+            with httpx.Client(timeout=60,follow_redirects=False) as client:
+                response=client.get(endpoint,headers=headers);response.raise_for_status();value=response.json()
+        except (httpx.HTTPError,ValueError):fail('קריאת הרשימות לא הושלמה',502)
+        def at(value,path):
+            if not path:return value
+            for part in path.split('.'):
+                if not isinstance(value,dict) or part not in value:return None
+                value=value[part]
+            return value
+        rows=at(value,config.get('read_items_path',''))
+        if not isinstance(rows,list) or len(rows)>1000:fail('יש להגדיר מסלול לרשימה ועד 1,000 רשומות בכל קריאה; השתמשו בעמודים או ביצוא קובץ')
+        output=[]
+        for row in rows:
+            if not isinstance(row,dict):fail('רשומה חיצונית לא תקינה')
+            item={field:str(at(row,path) if at(row,path) is not None else '')[:2000] for field,path in config['read_mapping'].items()}
+            if not item.get('code') or not item.get('name'):fail('מיפוי החיבור חייב להחזיר קוד ושם לכל רשומה')
+            output.append(item)
+        with db() as c:audit(c,company_id,None,'index_api_preview',{'kind':config['read_kind'],'count':len(output)})
+        return {'kind':config['read_kind'],'rows':output,'saved':False,'requires_confirmation':True}
 
     @app.post('/api/batches/{batch_id}/send')
     def send_batch(batch_id:str,payload:dict=Body(...)):

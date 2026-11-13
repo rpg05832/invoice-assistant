@@ -5,6 +5,7 @@ from urllib.request import urlopen
 
 REVISION = '87416418657359cb625c412a48b6e1d6d41c29bd'
 MODELS = {
+    'osd': '9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff',
     'heb': '11f9e43ab227f786352a50f75c94c2e9906f1baba86d93276da19da7ce0904db',
     'eng': '7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2',
 }

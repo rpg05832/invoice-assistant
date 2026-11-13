@@ -23,6 +23,8 @@ def now():return datetime.now(timezone.utc).isoformat()
 
 def initialize(c):
     c.executescript('''
+    CREATE TABLE IF NOT EXISTS supplier_meta(supplier_id TEXT PRIMARY KEY REFERENCES suppliers(id),value TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS check_corrections(id TEXT PRIMARY KEY,company_id TEXT NOT NULL REFERENCES companies(id),document_id TEXT NOT NULL REFERENCES documents(id),source_document_id TEXT NOT NULL REFERENCES documents(id),number TEXT NOT NULL,region TEXT NOT NULL,predictions TEXT NOT NULL,crop_sha TEXT NOT NULL,created TEXT NOT NULL,UNIQUE(company_id,crop_sha));
     CREATE TABLE IF NOT EXISTS company_meta(company_id TEXT PRIMARY KEY REFERENCES companies(id),value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS document_meta(document_id TEXT PRIMARY KEY REFERENCES documents(id),value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS document_links(primary_id TEXT NOT NULL REFERENCES documents(id),child_id TEXT PRIMARY KEY REFERENCES documents(id),CHECK(primary_id<>child_id));
@@ -36,6 +38,27 @@ def initialize(c):
     CREATE TABLE IF NOT EXISTS integration_attempts(id TEXT PRIMARY KEY,batch_id TEXT NOT NULL REFERENCES batches(id),status TEXT NOT NULL,result TEXT NOT NULL,created TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS verification(company_id TEXT PRIMARY KEY REFERENCES companies(id),value TEXT NOT NULL);
     ''')
+
+
+def remember_checks(c,d,checks,data,crop):
+    import hashlib
+    for check in checks:
+        if not check.get('confirmed') or not check.get('region'):continue
+        source=source_document(c,d,check.get('source_document_id'))
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'crop.png';crop(source,check['region'],path);sha=hashlib.sha256(path.read_bytes()).hexdigest()
+        c.execute('INSERT INTO check_corrections VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(company_id,crop_sha) DO UPDATE SET number=excluded.number,predictions=excluded.predictions,created=excluded.created',(uuid.uuid4().hex,d['company_id'],d['id'],source['id'],check['number'],encode(check['region']),encode(check.get('proposals',[])),sha,now()))
+
+
+def check_memory(c,company_id,path):
+    import hashlib
+    row=c.execute('SELECT number,document_id FROM check_corrections WHERE company_id=? AND crop_sha=?',(company_id,hashlib.sha256(path.read_bytes()).hexdigest())).fetchone()
+    return {'engine':'user-confirmed-exact-crop','number':row['number'],'source_document_id':row['document_id'],'confirmed':False,'reason':'אותו חיתוך בדיוק אושר בעבר בחברה זו; יש לאשר את השיוך למסמך הנוכחי'} if row else None
+
+
+def supplier_meta(c,supplier_id):
+    row=c.execute('SELECT value FROM supplier_meta WHERE supplier_id=?',(supplier_id,)).fetchone()
+    return json.loads(row[0]) if row else {}
 
 
 def company_meta(c,company_id):
@@ -60,7 +83,7 @@ def save_meta(c,doc_id,changes):
 
 def enrich(c,d):
     value=meta(c,d['id'])
-    d.update({key:value.get(key,default) for key,default in [('items',[]),('field_sources',{}),('field_engines',{}),('payment',None),('processing',{}),('suggested_checks',[])]})
+    d.update({key:value.get(key,default) for key,default in [('items',[]),('field_sources',{}),('field_engines',{}),('payment',None),('processing',{}),('suggested_checks',[]),('check_candidates_reviewed',False)]})
     ids=[d['id']]+[r[0] for r in c.execute('SELECT child_id FROM document_links WHERE primary_id=?',(d['id'],))]
     d['pages']=[dict(r) for i in ids for r in c.execute('SELECT id,source_id,page,region,engine FROM documents WHERE id=?',(i,))]
     d['supplier_suggestions']=[]
@@ -97,10 +120,21 @@ def validate_items(items):
 def update_extra(c,d,payload,fields,supplier_id):
     changes={}
     if 'items' in payload:changes['items']=validate_items(payload['items'])
+    if 'check_candidates_reviewed' in payload:changes['check_candidates_reviewed']=payload['check_candidates_reviewed'] is True
     if fields.get('purpose') not in PURPOSES:fail('יש לבחור יעד מסמך נתמך')
     engines=meta(c,d['id']).get('field_engines',{})
     for key,value in fields.items():
         if value!=d['fields'].get(key):engines[key]='manual'
+    run_id=payload.get('recognition_run_id')
+    if run_id:
+        run=c.execute('SELECT engine,result FROM recognition_runs WHERE id=? AND document_id=?',(run_id,d['id'])).fetchone()
+        if not run:fail('הצעת הזיהוי אינה שייכת למסמך',404)
+        proposal=json.loads(run['result']);sources=meta(c,d['id']).get('field_sources',{})
+        for key,value in fields.items():
+            if value==proposal.get('fields',{}).get(key) and value!=d['fields'].get(key):
+                engines[key]=run['engine']
+                if proposal.get('region'):sources[key]={**proposal['region'],'source_document_id':proposal.get('source_document_id',d['id'])}
+        changes['field_sources']=sources
     changes['field_engines']=engines
     save_meta(c,d['id'],changes)
     if payload.get('save_defaults'):
@@ -111,6 +145,7 @@ def update_extra(c,d,payload,fields,supplier_id):
 
 def extra_issues(c,d):
     value=meta(c,d['id']);out=[]
+    if value.get('suggested_checks') and not value.get('check_candidates_reviewed'):out.append('נמצאו אזורי ספרות או דיו נוסף. יש לבדוק את ההצעות ולסמן שבדיקת הצ׳קים הסתיימה')
     if value.get('items'):
         try:
             if sum((money(i['total']) for i in value['items']),Decimal(0))!=money(d['fields'].get('net','')):out.append('סכומי שורות הפריטים אינם שווים לסכום לפני מע״מ')
@@ -133,6 +168,41 @@ def source_document(c,d,doc_id=None):
 
 def register(app,s):
     db=s['db'];company=s['company'];document=s['document'];describe=s['describe'];audit=s['audit'];editable=s['editable'];data=s['data'];crop=s['crop']
+
+    @app.get('/api/model-status')
+    def model_status():
+        import os,platform
+        from . import ocr
+        from .paths import assets as asset_directory
+        assets=asset_directory()
+        models=assets/'models'
+        return {'hardware':{'architecture':platform.machine(),'logical_cpus':os.cpu_count(),'gpu_required':False},'engines':[
+            {'id':'tesseract-fast','installed':ocr.capabilities()['hebrew'],'hebrew':True,'role':'Hebrew + English printed OCR'},
+            {'id':'tesseract-best','installed':(assets/'tessdata_best/heb.traineddata').is_file(),'hebrew':True,'role':'Optional full precision printed OCR'},
+            {'id':'paddle-v5','installed':(models/'paddle-digits/inference.onnx').is_file(),'hebrew':False,'digits_only':True,'role':'Whole numeral sequence proposals; English model restricted to digit crops'},
+            {'id':'paddle-v6-small','installed':(models/'PP-OCRv6_small_rec_onnx/inference.onnx').is_file(),'hebrew':False,'digits_only':True,'role':'Small CPU sequence model; no Hebrew alphabet'},
+            {'id':'mnist-onnx','installed':(models/'mnist-12.onnx').is_file(),'hebrew':'digits only; language independent','role':'Handwritten digits; full sequence requires review'},
+            {'id':'indra-rtl','installed':(models/'indra/rec_rtl.onnx').is_file(),'hebrew':True,'role':'Optional Hebrew RTL OCR; model license applies'},
+            {'id':'qwen3-vl-4b-q4','installed':(models/'Qwen3VL-4B-Instruct-Q4_K_M.gguf').is_file(),'hebrew':True,'role':'Optional context/image proposals; Hebrew smoke tested with word errors; about 4.5 GB RAM and 68 seconds on test CPU'},
+            {'id':'qwen3-vl-2b-q4','installed':(models/'Qwen3VL-2B-Instruct-Q4_K_M.gguf').is_file(),'hebrew':False,'selected':False,'digits_only':True,'role':'Digits-only route on port 8090; never allowed to update Hebrew text. Rejected as a Hebrew text engine'}]}
+
+    @app.get('/api/companies/{company_id}/ocr-settings')
+    def ocr_settings(company_id:str):
+        with db() as c:
+            value=company(c,company_id)
+            return {'quality':value.get('ocr_quality','fast')}
+
+    @app.put('/api/companies/{company_id}/ocr-settings')
+    def save_ocr_settings(company_id:str,payload:dict=Body(...)):
+        quality=payload.get('quality')
+        if quality not in ('fast','best'):fail('איכות OCR לא תקינה')
+        from . import ocr
+        from .paths import assets
+        if quality=='best' and not (assets()/'tessdata_best/heb.traineddata').is_file():fail('יש להתקין scripts/setup_ocr_best.py לפני בחירת מודל זה')
+        with db() as c:
+            company(c,company_id);value=company_meta(c,company_id);value['ocr_quality']=quality;save_company_meta(c,company_id,value)
+            audit(c,company_id,None,'ocr_settings_saved',{'quality':quality})
+        return {'quality':quality}
 
     @app.post('/api/companies/{company_id}/import-fixed-preview')
     def fixed_import_preview(company_id:str,file:UploadFile=File(...),widths:str=Form(...),encoding:str=Form('cp1255')):
@@ -165,6 +235,36 @@ def register(app,s):
         with db() as c:
             company(c,company_id)
             return [{**json.loads(r['value']),'id':r['id']} for r in c.execute('SELECT * FROM records WHERE company_id=? AND kind=? ORDER BY code',(company_id,kind))]
+
+    @app.get('/api/companies/{company_id}/correction-dataset')
+    def correction_dataset(company_id:str):
+        import zipfile
+        from fastapi.responses import Response
+        output=io.BytesIO();labels=io.StringIO(newline='');writer=csv.writer(labels);writer.writerow(['image','number','source_group','document_id'])
+        with db() as c:
+            company(c,company_id)
+            rows=c.execute('SELECT * FROM check_corrections WHERE company_id=? ORDER BY created',(company_id,)).fetchall()
+            with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as archive:
+                with tempfile.TemporaryDirectory() as temp:
+                    for row in rows:
+                        d=document(c,row['document_id']);source=document(c,row['source_document_id'],company_id)
+                        path=Path(temp)/(row['id']+'.png');crop(source,json.loads(row['region']),path)
+                        name='images/'+row['id']+'.png';archive.write(path,name);writer.writerow([name,row['number'],source['source_id'],d['id']])
+                archive.writestr('labels.csv',labels.getvalue().encode('utf-8-sig'))
+                archive.writestr('README.txt','Local user-confirmed digit crops. Keep all crops with the same source_group in one train/test split. Do not report training-set accuracy as held-out accuracy. No automatic cloud upload or training has occurred.')
+            audit(c,company_id,None,'correction_dataset_exported',{'count':len(rows)})
+        return Response(output.getvalue(),media_type='application/zip',headers={'Content-Disposition':'attachment; filename="digit-corrections.zip"'})
+
+    @app.get('/api/companies/{company_id}/grouping-suggestions')
+    def grouping_suggestions(company_id:str):
+        with db() as c:
+            company(c,company_id);groups={}
+            for row in c.execute("SELECT id FROM documents WHERE company_id=? AND status IN ('review','approved','rejected')",(company_id,)):
+                d=document(c,row['id']);f=d['fields']
+                if not f.get('number'):continue
+                key=(f.get('supplier_tax_id') or d['supplier_id'] or '',f['kind'],f['number'].strip().casefold())
+                groups.setdefault(key,[]).append({'id':d['id'],'source_name':d['source_name'],'page':d['page'],'number':f['number'],'complete_fields':sum(bool(f.get(k)) for k in ('number','date','net','vat','total'))})
+            return [{'documents':sorted(values,key=lambda d:d['complete_fields'],reverse=True),'reason':'אותו מספר מסמך וסוג באותה חברה. ייתכנו עמודי המשך או כפילות; בחרו במפורש כיצד לטפל.'} for values in groups.values() if len(values)>1]
 
     @app.post('/api/companies/{company_id}/records/{kind}/preview')
     def preview_records(company_id:str,kind:str,file:UploadFile=File(...)):
@@ -214,14 +314,25 @@ def register(app,s):
         with db() as c:
             primary=document(c,doc_id);editable(primary)
             if c.execute('SELECT 1 FROM document_links WHERE child_id=?',(doc_id,)).fetchone():fail('מסמך זה כבר צורף כעמוד המשך')
-            checks=list(primary['checks'])
+            checks=list(primary['checks']);suggestions=list(meta(c,doc_id).get('suggested_checks',[]));field_values={};source_fields={}
             for ident in ids:
                 child=document(c,ident,primary['company_id']);editable(child)
                 if c.execute('SELECT 1 FROM document_links WHERE child_id=? OR primary_id=?',(ident,ident)).fetchone():fail('עמוד כבר משויך. יש לפרק את החיבור הקודם תחילה',409)
                 c.execute('INSERT INTO document_links VALUES(?,?)',(doc_id,ident))
                 c.execute("UPDATE documents SET status='archived',revision=revision+1 WHERE id=?",(ident,))
                 checks.extend([{**check,'source_document_id':ident} for check in child['checks']])
-            c.execute("UPDATE documents SET status='review',checks=?,revision=revision+1 WHERE id=?",(encode(checks),doc_id))
+                child_meta=meta(c,ident)
+                suggestions.extend([{**proposal,'source_document_id':ident} for proposal in child_meta.get('suggested_checks',[])])
+                for key,value in child['fields'].items():
+                    if value and not primary['fields'].get(key):field_values.setdefault(key,set()).add(value);source_fields[(key,value)]=ident
+            fields=dict(primary['fields']);sources=meta(c,doc_id).get('field_sources',{});engines=meta(c,doc_id).get('field_engines',{})
+            for key,values in field_values.items():
+                if len(values)==1:
+                    value=next(iter(values));fields[key]=value;origin=source_fields[(key,value)];engines[key]='joined-page:'+origin
+                    region=meta(c,origin).get('field_sources',{}).get(key)
+                    if region:sources[key]={**region,'image_document_id':origin}
+            save_meta(c,doc_id,{'suggested_checks':suggestions,'check_candidates_reviewed':False,'field_sources':sources,'field_engines':engines})
+            c.execute("UPDATE documents SET status='review',checks=?,fields=?,revision=revision+1 WHERE id=?",(encode(checks),encode(fields),doc_id))
             audit(c,primary['company_id'],doc_id,'joined',{'pages':ids})
             return describe(c,document(c,doc_id))
 
@@ -233,6 +344,9 @@ def register(app,s):
             for ident in ids:c.execute("UPDATE documents SET status='review',revision=revision+1 WHERE id=?",(ident,))
             c.execute('DELETE FROM document_links WHERE primary_id=?',(doc_id,))
             checks=[ch for ch in d['checks'] if ch.get('source_document_id',doc_id)==doc_id]
+            value=meta(c,doc_id)
+            own_suggestions=[proposal for proposal in value.get('suggested_checks',[]) if proposal.get('source_document_id',doc_id)==doc_id]
+            save_meta(c,doc_id,{'suggested_checks':own_suggestions,'check_candidates_reviewed':False})
             c.execute("UPDATE documents SET status='review',checks=?,revision=revision+1 WHERE id=?",(encode(checks),doc_id))
             audit(c,d['company_id'],doc_id,'unjoined',{'pages':ids})
         return {'ids':ids}
@@ -242,6 +356,34 @@ def register(app,s):
         from .vision import suggest_regions
         with db() as c:d=document(c,doc_id)
         return suggest_regions(data/d['image'])
+
+    @app.post('/api/documents/{doc_id}/rotate')
+    def rotate_preview(doc_id:str,payload:dict=Body(...)):
+        from PIL import Image
+        angle=payload.get('angle')
+        if angle not in (90,180,270):fail('יש לבחור סיבוב של 90, 180 או 270 מעלות')
+        path=None
+        try:
+            with db() as c:
+                d=document(c,doc_id);editable(d)
+                if payload.get('revision')!=d['revision']:fail('המסמך עודכן. יש לרענן לפני סיבוב',409)
+                path=(data/d['image']).with_name('rotate-'+uuid.uuid4().hex+'.png')
+                with Image.open(data/d['image']) as image:image.rotate(-angle,expand=True).save(path,'PNG')
+                value=meta(c,doc_id);sources=value.get('field_sources',{})
+                for r in sources.values():
+                    if r.get('source_document_id'):continue
+                    x,y,w,h=[r[k] for k in ('x','y','w','h')]
+                    if angle==90:r.update(x=1-y-h,y=x,w=h,h=w)
+                    elif angle==180:r.update(x=1-x-w,y=1-y-h)
+                    else:r.update(x=y,y=1-x-w,w=h,h=w)
+                processing=value.get('processing',{});processing['manual_rotation']=(processing.get('manual_rotation',0)+angle)%360
+                save_meta(c,doc_id,{'field_sources':sources,'processing':processing})
+                c.execute("UPDATE documents SET image=?,status='review',revision=revision+1 WHERE id=?",(path.relative_to(data).as_posix(),doc_id))
+                audit(c,d['company_id'],doc_id,'rotated',{'angle':angle,'source_image_retained':True})
+                return describe(c,document(c,doc_id))
+        except Exception:
+            if path:path.unlink(missing_ok=True)
+            raise
 
     @app.post('/api/documents/{doc_id}/check-suggestions')
     def check_suggestions(doc_id:str):

@@ -21,6 +21,8 @@ if errorlevel 1 exit /b 1
 if errorlevel 1 exit /b 1
 .venv\Scripts\python.exe scripts\setup_digits.py
 if errorlevel 1 exit /b 1
+.venv\Scripts\python.exe scripts\setup_sequences.py
+if errorlevel 1 exit /b 1
 echo Setup complete. Local OCR also requires Tesseract 5 on PATH.
 echo If missing, install it with: winget install --id UB-Mannheim.TesseractOCR --exact
 echo Then double-click start.cmd.

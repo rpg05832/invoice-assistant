@@ -14,12 +14,17 @@ def main():
     install_models()
     from setup_digits import main as install_digits
     install_digits()
+    from setup_sequences import main as install_sequences
+    install_sequences()
     output = ROOT / 'dist' / 'invoice-assistant-0.1.0-windows-source.zip'
     output.parent.mkdir(exist_ok=True)
     tracked = subprocess.check_output(['git', '-C', str(ROOT), 'ls-files', '-z']).decode().split('\0')
     paths = [Path(p) for p in tracked if p and not p.startswith(('.github/', 'tests/'))]
     if not paths: raise RuntimeError('Stage or commit source files before packaging')
     paths += [Path('data/models/mnist-12.onnx')]
+    import json
+    for model in json.loads((ROOT/'scripts/sequence-models.json').read_text()).values():
+        paths += [Path('data/models')/model['directory']/name for name in model['files']]
     paths += [Path('data/tessdata') / f'{lang}.traineddata' for lang in MODELS]
     with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as z:
         for relative in sorted(paths):

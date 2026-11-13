@@ -8,3 +8,5 @@ test-results/
 node_modules/
 
 dist/
+build/
+*.spec

@@ -101,7 +101,7 @@ def create_app(data_dir=None):
 
     def supplier_for(c, d):
         row = c.execute('SELECT * FROM suppliers WHERE id=? AND company_id=?', (d['supplier_id'], d['company_id'])).fetchone()
-        return dict(row) if row else None
+        return {**dict(row),**advanced.supplier_meta(c,row['id'])} if row else None
 
     def doc_issues(c, d):
         result = issues(d['fields'], supplier_for(c, d), d['checks'], company(c, d['company_id']))
@@ -133,12 +133,15 @@ def create_app(data_dir=None):
         return None
 
     def insert_document(c, company_id, source_id, page, image_path, text, engine, warning, region=None, parent_id=None, tokens=None):
-        doc_id = uid(); fields = extract(text)
+        doc_id = uid(); fields = extract(text,tokens,company(c,company_id)['tax_id'])
         original_fields = dict(fields)
         supplier_id = match_supplier(c, company_id, fields)
         fields.update(advanced.defaults_for(c, company_id, supplier_id, fields['kind']))
         c.execute('INSERT INTO documents(id,company_id,source_id,page,image,region,fields,original_fields,ocr_text,engine,warning,supplier_id,created,parent_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                   (doc_id, company_id, source_id, page, image_path.relative_to(data).as_posix(), encode(region) if region else None, encode(fields), encode(original_fields), text, engine, warning, supplier_id, now(), parent_id))
+        suggestions=advanced.meta(c,parent_id).get('suggested_checks',[]) if parent_id else vision.suggested_checks(image_path,[fields.get(key,'') for key in ('number','supplier_tax_id','recipient_tax_id','allocation')],words=tokens or [])
+        for proposal in suggestions:proposal['source_document_id']=doc_id
+        advanced.save_meta(c,doc_id,{'suggested_checks':suggestions})
         advanced.save_meta(c, doc_id, {'tokens':tokens or [],'field_sources':vision.field_sources(original_fields,tokens or []),'field_engines':{key:engine for key,value in original_fields.items() if value}})
         audit(c, company_id, doc_id, 'created', {'engine': engine, 'page': page})
         return doc_id
@@ -174,7 +177,7 @@ def create_app(data_dir=None):
     def suppliers(company_id: str):
         with db() as c:
             company(c, company_id)
-            return [dict(r) for r in c.execute('SELECT * FROM suppliers WHERE company_id=? ORDER BY name', (company_id,))]
+            return [{**dict(r),**advanced.supplier_meta(c,r['id'])} for r in c.execute('SELECT * FROM suppliers WHERE company_id=? ORDER BY name', (company_id,))]
 
     def save_supplier(c, company_id, p):
         code, name = str(p.get('code', '')).strip(), str(p.get('name', '')).strip()
@@ -184,7 +187,11 @@ def create_app(data_dir=None):
         if tax_id and not re.fullmatch(r'\d{9}', tax_id): fail('מספר עוסק ספק צריך להכיל 9 ספרות')
         c.execute('INSERT INTO suppliers(id,company_id,code,name,tax_id,active,expense_account) VALUES(?,?,?,?,?,?,?) ON CONFLICT(company_id,code) DO UPDATE SET name=excluded.name,tax_id=excluded.tax_id,active=excluded.active,expense_account=excluded.expense_account',
                   (uid(), company_id, code, name, tax_id, existing['active'] if existing and p.get('active') in (None,'') else 0 if str(p.get('active','1')).strip().casefold() in ('false','0','לא','inactive','no') else 1, str(p.get('expense_account',existing['expense_account'] if existing else ''))[:200]))
-        return dict(c.execute('SELECT * FROM suppliers WHERE company_id=? AND code=?', (company_id, code)).fetchone())
+        row=dict(c.execute('SELECT * FROM suppliers WHERE company_id=? AND code=?', (company_id, code)).fetchone())
+        additional=advanced.supplier_meta(c,row['id'])
+        additional.update({key:str(p[key])[:1000] for key in ('sort_code','branch','parent_code','company_code','notes') if key in p})
+        c.execute('INSERT INTO supplier_meta VALUES(?,?) ON CONFLICT(supplier_id) DO UPDATE SET value=excluded.value',(row['id'],encode(additional)))
+        return {**row,**additional}
 
     @app.post('/api/companies/{company_id}/suppliers')
     def add_supplier(company_id: str, payload: dict = Body(...)):
@@ -257,13 +264,14 @@ def create_app(data_dir=None):
         if not content or len(content) > 25_000_000: fail('יש לבחור קובץ עד 25MB')
         sha = hashlib.sha256(content).hexdigest()
         with db() as c:
-            company(c, company_id)
+            company_info=company(c, company_id)
             duplicate = c.execute('SELECT id FROM sources WHERE company_id=? AND sha=?', (company_id, sha)).fetchone()
             if duplicate: fail('הקובץ הזה כבר קיים בחברה', 409)
         source_id = uid(); source_dir = files / source_id; source_dir.mkdir()
         original = source_dir / 'original'
         original.write_bytes(content)
         pages = []
+        persisted=False
         try:
             if content.startswith(b'%PDF-'):
                 with fitz.open(stream=content, filetype='pdf') as pdf:
@@ -275,7 +283,10 @@ def create_app(data_dir=None):
                         page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False).save(path)
                         text = page.get_text().strip()
                         if len(text) >= 20: engine, warning = 'pdf-text', ''
-                        else: text, engine, warning = ocr.recognize(path)
+                        else:
+                            prepared=source_dir/f'prepared-{index+1}.png'
+                            vision.preprocess(path,prepared);prepared.replace(path)
+                            text,engine,warning=ocr.recognize(path,quality='best') if company_info.get('ocr_quality')=='best' else ocr.recognize(path)
                         words = vision.pdf_tokens(page) if engine == 'pdf-text' else vision.tokens(path)
                         pages.append((index+1, path, text, engine, warning, words, {'items':vision.pdf_items(page),'processing':{'pdf_rotation':page.rotation}}))
             else:
@@ -290,7 +301,7 @@ def create_app(data_dir=None):
                         prepared = source_dir / f'prepared-{index+1}.png'
                         processing=vision.preprocess(path, prepared)
                         prepared.replace(path)
-                        text, engine, warning = ocr.recognize(path)
+                        text,engine,warning=ocr.recognize(path,quality='best') if company_info.get('ocr_quality')=='best' else ocr.recognize(path)
                         pages.append((index+1, path, text, engine, warning, vision.tokens(path), {'processing':processing}))
             with db() as c:
                 c.execute('INSERT INTO sources VALUES(?,?,?,?,?,?)', (source_id, company_id, (file.filename or 'document')[:250], original.relative_to(data).as_posix(), sha, now()))
@@ -300,7 +311,8 @@ def create_app(data_dir=None):
                     advanced.save_meta(c,ident,extra);ids.append(ident)
                 from .cloud import settings as recognition_settings
                 config=recognition_settings(c,company_id)
-                failures=[ident for ident in ids if document(c,ident)['engine'] in ('failed','unavailable') or all(not document(c,ident)['fields'].get(key) for key in ('number','date','total'))]
+                failures=[ident for ident in ids if document(c,ident)['engine'] in ('failed','unavailable') or any(not document(c,ident)['fields'].get(key) for key in ('number','date','total'))]
+            persisted=True
             proposals=[]
             if config.get('mode')=='on_failure':
                 for ident in failures:
@@ -310,6 +322,7 @@ def create_app(data_dir=None):
                     except HTTPException:pass
             return {'ids':ids,'pages':len(ids),'additional_proposals':proposals}
         except Exception as exc:
+            if persisted:return {'ids':ids,'pages':len(ids),'warning':'המסמכים נשמרו לבדיקה. הזיהוי הנוסף לא הושלם; אפשר להפעילו ידנית.'}
             import shutil
             shutil.rmtree(source_dir, ignore_errors=True)
             if isinstance(exc, HTTPException): raise
@@ -359,6 +372,7 @@ def create_app(data_dir=None):
                 c.execute('INSERT INTO aliases VALUES(?,?,?) ON CONFLICT(company_id,alias) DO UPDATE SET supplier_id=excluded.supplier_id', (d['company_id'], f['supplier_name'].casefold(), supplier_id))
             audit(c, d['company_id'], doc_id, 'edited', {'before': d['fields'], 'after': f, 'checks_before': d['checks'], 'checks_after': clean_checks, 'supplier_before': d['supplier_id'], 'supplier_after': supplier_id, 'revision': d['revision'] + 1})
             advanced.update_extra(c, d, payload, f, supplier_id)
+            advanced.remember_checks(c,d,clean_checks,data,crop)
             return describe(c, document(c, doc_id))
 
     def editable(d):
@@ -391,9 +405,13 @@ def create_app(data_dir=None):
                 path = Path(temp) / 'check.png'; crop(source_doc, region, path)
                 text, engine, warning = ocr.recognize(path, digits=True)
                 independent = vision.digit_proposal(path)
+                from .sequence_digits import recognize as sequence_recognize
+                sequences=[sequence_recognize(path,model) for model in ('paddle-v6-small','paddle-v5')]
+                remembered=advanced.check_memory(c,d['company_id'],path)
             # Keep uncertainty visible: multiple runs of digits are never concatenated.
             candidates = re.findall(r'[0-9]{1,30}', text)
-            return {'number': candidates[0] if len(candidates) == 1 else '', 'candidates': candidates, 'confirmed': False, 'region': region, 'source_document_id':source_doc['id'], 'engine': engine, 'warning': warning, 'proposals':[{'engine':engine,'number':candidates[0] if len(candidates)==1 else ''},independent]}
+            primary=remembered or next((p for p in sequences if p.get('number')),None)
+            return {'number': primary['number'] if primary else candidates[0] if len(candidates) == 1 else '', 'candidates': candidates, 'confirmed': False, 'region': region, 'source_document_id':source_doc['id'], 'engine': engine, 'warning': warning, 'proposals':([remembered] if remembered else [])+sequences+[{'engine':engine,'number':candidates[0] if len(candidates)==1 else ''},independent]}
 
     @app.get('/api/documents/{doc_id}/region-image')
     def region_image(doc_id: str, x: float, y: float, w: float, h: float, rotation: int = 0):
@@ -495,6 +513,8 @@ def create_app(data_dir=None):
         supplier = supplier_for(c, d)
         row = dict(d['fields'])
         row.update(supplier_code=supplier['code'], checks=';'.join(ch['number'] for ch in d['checks']),document_id=d['id'],company_code=company(c,d['company_id']).get('code',''))
+        row['supplier_name']=row.get('supplier_name') or supplier['name']
+        row['supplier_tax_id']=row.get('supplier_tax_id') or supplier['tax_id']
         for k in ('net', 'vat', 'total'): row[k] = str(money(row[k]).quantize(Decimal('.01')))
         return row
 
@@ -540,7 +560,7 @@ def create_app(data_dir=None):
             row['reference']=row['checks']
             if settings.get('check_mapping')=='notes':row['notes']=(row.get('notes','')+' צ׳קים: '+row['checks']).strip();row['reference']=''
             if settings.get('check_mapping')=='payment' and not meta.get('payment'):fail('מיפוי לצ׳ק בתנועת תשלום מחייב יצירה ואישור מפורשים של פרטי תשלום')
-            items.append({'document_id':d['id'],'row':row,'checks':d['checks'],'revision':d['revision'],'items':meta.get('items',[]),'payment':meta.get('payment'),'journal':journal(row,meta.get('payment')),'pages':[d['id']]+[r[0] for r in c.execute('SELECT child_id FROM document_links WHERE primary_id=?',(d['id'],))]})
+            items.append({'document_id':d['id'],'row':row,'checks':d['checks'],'revision':d['revision'],'items':meta.get('items',[]),'payment':meta.get('payment'),'journal':journal(row,meta.get('payment')),'ocr_engine':d['engine'],'field_engines':meta.get('field_engines',{}),'original_fields':d['original_fields'],'mapping_version':settings.get('version','default-v1'),'pages':[d['id']]+[r[0] for r in c.execute('SELECT child_id FROM document_links WHERE primary_id=?',(d['id'],))]})
         snapshot = {'profile':settings,'items':items,'verified':False}
         if settings.get('format')=='fixed':fixed_bytes(snapshot)
         csv_bytes(snapshot)  # Validate all lengths and encoding before changing any status.
