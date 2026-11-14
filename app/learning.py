@@ -148,7 +148,8 @@ def record_edit(c,d,payload,fields,supplier_id,checks,data,crop,validate_region)
         c.execute('INSERT INTO learning_events VALUES(?,?,?,?,?,?,?,?,?,?)',(uid(),d['company_id'],d['id'],revision,key,before,after,encode(context),0,now()))
     # Keep the final teaching context for approval; unsaved changes never become training labels.
     from .advanced import save_meta
-    save_meta(c,d['id'],{'learning_context':{'writer_id':writer,'reason':value['reason'],'explanation':value['explanation'],'field_regions':regions}})
+    marked_sources={key:{**marked['region'],'source_document_id':marked.get('source_document_id') or d['id']} for key,marked in regions.items()}
+    save_meta(c,d['id'],{'learning_context':{'writer_id':writer,'reason':value['reason'],'explanation':value['explanation'],'field_regions':regions},'field_sources':{**sources,**marked_sources}})
     def identity(check):return (check.get('source_document_id') or d['id'],tuple(check.get('region',{}).get(k) for k in ('x','y','w','h','rotation')) if check.get('region') else None,check.get('number'))
     retained={identity(check) for check in checks if check.get('confirmed')}
     for old in d['checks']:

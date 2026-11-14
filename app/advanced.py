@@ -83,6 +83,9 @@ def save_meta(c,doc_id,changes):
 
 def enrich(c,d):
     value=meta(c,d['id'])
+    from .document_reading import amount_review_reason
+    d['amount_review_reason']=amount_review_reason(d['fields'],d['ocr_text'])
+    d['amount_reviewed']=value.get('amount_review_values')=={k:d['fields'].get(k,'') for k in ('net','vat','total')}
     d.update({key:value.get(key,default) for key,default in [('items',[]),('field_sources',{}),('field_engines',{}),('payment',None),('processing',{}),('suggested_checks',[]),('check_candidates_reviewed',False)]})
     ids=[d['id']]+[r[0] for r in c.execute('SELECT child_id FROM document_links WHERE primary_id=?',(d['id'],))]
     d['pages']=[dict(r) for i in ids for r in c.execute('SELECT id,source_id,page,region,engine FROM documents WHERE id=?',(i,))]
@@ -121,6 +124,7 @@ def update_extra(c,d,payload,fields,supplier_id):
     changes={}
     if 'items' in payload:changes['items']=validate_items(payload['items'])
     if 'check_candidates_reviewed' in payload:changes['check_candidates_reviewed']=payload['check_candidates_reviewed'] is True
+    if 'amount_reviewed' in payload:changes['amount_review_values']={k:fields.get(k,'') for k in ('net','vat','total')} if payload['amount_reviewed'] is True else None
     if fields.get('purpose') not in PURPOSES:fail('יש לבחור יעד מסמך נתמך')
     engines=meta(c,d['id']).get('field_engines',{})
     for key,value in fields.items():
@@ -145,6 +149,8 @@ def update_extra(c,d,payload,fields,supplier_id):
 
 def extra_issues(c,d):
     value=meta(c,d['id']);out=[]
+    from .document_reading import amount_review_reason
+    if amount_review_reason(d['fields'],d['ocr_text']) and value.get('amount_review_values')!={k:d['fields'].get(k,'') for k in ('net','vat','total')}:out.append('יש לבדוק במקור ולאשר במפורש את הסכומים עם ובלי מע״מ')
     if value.get('suggested_checks') and not value.get('check_candidates_reviewed'):out.append('נמצאו אזורי ספרות או דיו נוסף. יש לבדוק את ההצעות ולסמן שבדיקת הצ׳קים הסתיימה')
     if value.get('items'):
         try:
@@ -394,7 +400,7 @@ def register(app,s):
             d=document(c,doc_id);editable(d)
             source=data/'files'/d['source_id']/f"page-{d['page']}.png"
             fields=d['fields'];excluded=[fields.get(key,'') for key in ('supplier_tax_id','recipient_tax_id','number','allocation')]
-            results=suggested_checks(source,excluded)
+            results=suggested_checks(source,excluded,propose=lambda path:app.state.check_proposals(c,d,path)['proposals'])
             for result in results:result['source_document_id']=doc_id
             related=[]
             for row in c.execute("SELECT id,checks FROM documents WHERE company_id=? AND id<>? AND status<>'archived'",(d['company_id'],doc_id)):

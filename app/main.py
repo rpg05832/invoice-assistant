@@ -23,7 +23,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from openpyxl import Workbook, load_workbook
 from PIL import Image, ImageOps
 
-from . import ocr, vision, advanced, learning, model_runtime, learning_transfer, review_tools
+from . import ocr, vision, advanced, learning, model_runtime, learning_transfer, review_tools, document_reading
 from .domain import TARGETS, TYPES, FIELDS, EXPORT_FIELDS, extract, issues, money, safe_cell
 
 def uid(): return uuid.uuid4().hex
@@ -137,6 +137,22 @@ def create_app(data_dir=None):
             return learning.match_alias(c,company_id,fields['supplier_name'])
         return None
 
+    def check_proposals(c,d,path,writer=None):
+        text,engine,warning=ocr.recognize(path,digits=True)
+        independent=vision.digit_proposal(path)
+        from .sequence_digits import recognize as sequence_recognize
+        sequences=learning.multi_proposals(path) if learning.settings(c,d['company_id'])['multi_pass'] else [sequence_recognize(path,model) for model in ('paddle-v6-small','paddle-v5')]
+        personal=app.state.learning.proposals(c,d['company_id'],path,writer)
+        remembered=advanced.check_memory(c,d['company_id'],path) or learning.imported_memory(c,d['company_id'],path)
+        candidates=re.findall(r'[0-9]{1,30}',text)
+        proposals=([remembered] if remembered else [])+personal+sequences+[{'engine':engine,'number':candidates[0] if len(candidates)==1 else ''},independent]
+        proposals+=learning.registered_checks(c,d,proposals)
+        proposals=learning.calibrate(c,d['company_id'],proposals)
+        primary=next((p for p in proposals if p.get('number') and p.get('available') is not False),None)
+        return {'number':primary['number'] if primary else candidates[0] if len(candidates)==1 else '', 'engine':primary.get('engine',engine) if primary else engine,'warning':warning,'proposals':proposals,'candidates':candidates,'confirmed':False}
+
+    app.state.check_proposals=check_proposals
+
     def insert_document(c, company_id, source_id, page, image_path, text, engine, warning, region=None, parent_id=None, tokens=None):
         doc_id = uid(); fields = extract(text,tokens,company(c,company_id)['tax_id'])
         original_fields = dict(fields)
@@ -148,7 +164,7 @@ def create_app(data_dir=None):
             fields[key]=value
         c.execute('INSERT INTO documents(id,company_id,source_id,page,image,region,fields,original_fields,ocr_text,engine,warning,supplier_id,created,parent_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                   (doc_id, company_id, source_id, page, image_path.relative_to(data).as_posix(), encode(region) if region else None, encode(fields), encode(original_fields), text, engine, warning, supplier_id, now(), parent_id))
-        suggestions=advanced.meta(c,parent_id).get('suggested_checks',[]) if parent_id else vision.suggested_checks(image_path,[fields.get(key,'') for key in ('number','supplier_tax_id','recipient_tax_id','allocation')],words=tokens or [])
+        suggestions=advanced.meta(c,parent_id).get('suggested_checks',[]) if parent_id else vision.suggested_checks(image_path,[fields.get(key,'') for key in ('number','supplier_tax_id','recipient_tax_id','allocation')],words=tokens or [],propose=lambda path:check_proposals(c,document(c,doc_id),path)['proposals'])
         for proposal in suggestions:proposal['source_document_id']=doc_id
         advanced.save_meta(c,doc_id,{'suggested_checks':suggestions})
         advanced.save_meta(c, doc_id, {'tokens':tokens or [],'field_sources':vision.field_sources(original_fields,tokens or []),'field_engines':{key:engine for key,value in original_fields.items() if value}})
@@ -296,8 +312,10 @@ def create_app(data_dir=None):
                             prepared=source_dir/f'prepared-{index+1}.png'
                             vision.preprocess(path,prepared);prepared.replace(path)
                             text,engine,warning=ocr.recognize(path,quality=company_info['ocr_quality']) if company_info.get('ocr_quality') in ('best','rivok') else ocr.recognize(path)
-                        words = vision.pdf_tokens(page) if engine == 'pdf-text' else vision.tokens(path)
-                        pages.append((index+1, path, text, engine, warning, words, {'items':vision.pdf_items(page),'processing':{'pdf_rotation':page.rotation}}))
+                        words = vision.pdf_tokens(page) if engine == 'pdf-text' else vision.tokens(path,quality=company_info.get('ocr_quality','fast'))
+                        focused=[]
+                        if engine=='tesseract':text,words,focused=document_reading.refine(path,text,words,company_info.get('ocr_quality','fast'))
+                        pages.append((index+1, path, text, engine, warning, words, {'items':vision.pdf_items(page),'processing':{'pdf_rotation':page.rotation},'focused_reading':focused}))
             else:
                 with Image.open(io.BytesIO(content)) as img:
                     if img.format not in ('JPEG', 'PNG', 'TIFF', 'WEBP'): fail('פורמט תמונה לא נתמך')
@@ -311,7 +329,9 @@ def create_app(data_dir=None):
                         processing=vision.preprocess(path, prepared)
                         prepared.replace(path)
                         text,engine,warning=ocr.recognize(path,quality=company_info['ocr_quality']) if company_info.get('ocr_quality') in ('best','rivok') else ocr.recognize(path)
-                        pages.append((index+1, path, text, engine, warning, vision.tokens(path), {'processing':processing}))
+                        words=vision.tokens(path,quality=company_info.get('ocr_quality','fast'));focused=[]
+                        if engine=='tesseract':text,words,focused=document_reading.refine(path,text,words,company_info.get('ocr_quality','fast'))
+                        pages.append((index+1, path, text, engine, warning, words, {'processing':processing,'focused_reading':focused}))
             with db() as c:
                 c.execute('INSERT INTO sources VALUES(?,?,?,?,?,?)', (source_id, company_id, (file.filename or 'document')[:250], original.relative_to(data).as_posix(), sha, now()))
                 ids=[]
@@ -418,20 +438,37 @@ def create_app(data_dir=None):
             source_doc = advanced.source_document(c, d, payload.get('source_document_id'))
             with tempfile.TemporaryDirectory() as temp:
                 path = Path(temp) / 'check.png'; crop(source_doc, region, path)
-                text, engine, warning = ocr.recognize(path, digits=True)
-                independent = vision.digit_proposal(path)
-                from .sequence_digits import recognize as sequence_recognize
                 writer=learning.check_writer(c,d['company_id'],payload.get('writer_id'))
-                sequences=learning.multi_proposals(path) if learning.settings(c,d['company_id'])['multi_pass'] else [sequence_recognize(path,model) for model in ('paddle-v6-small','paddle-v5')]
-                personal=app.state.learning.proposals(c,d['company_id'],path,writer)
-                remembered=advanced.check_memory(c,d['company_id'],path) or learning.imported_memory(c,d['company_id'],path)
-            # Keep uncertainty visible: multiple runs of digits are never concatenated.
-            candidates = re.findall(r'[0-9]{1,30}', text)
-            proposals=([remembered] if remembered else [])+personal+sequences+[{'engine':engine,'number':candidates[0] if len(candidates)==1 else ''},independent]
-            proposals+=learning.registered_checks(c,d,proposals)
-            proposals=learning.calibrate(c,d['company_id'],proposals)
-            primary=next((p for p in proposals if p.get('number') and p.get('available') is not False),None)
-            return {'number': primary['number'] if primary else candidates[0] if len(candidates) == 1 else '', 'candidates': candidates, 'confirmed': False, 'region': region, 'source_document_id':source_doc['id'], 'writer_id':writer,'engine': primary.get('engine',engine) if primary else engine, 'warning': warning, 'proposals':proposals}
+                result=check_proposals(c,d,path,writer)
+            return {**result,'region':region,'source_document_id':source_doc['id'],'writer_id':writer}
+
+    @app.post('/api/documents/{doc_id}/field-region')
+    def field_region(doc_id:str,payload:dict=Body(...)):
+        field=payload.get('field')
+        if field not in ('number','supplier_name','supplier_tax_id','net','vat','total'):fail('שדה לא נתמך בפענוח אזור')
+        region=payload.get('region');validate_region(region)
+        with db() as c:
+            d=document(c,doc_id);editable(d);source=advanced.source_document(c,d,payload.get('source_document_id'))
+            # crop() retains the original page and validates the selected page scope.
+            with tempfile.TemporaryDirectory() as directory:
+                target=Path(directory)/'field.png';crop(source,region,target)
+                text,engine,warning,_=document_reading.read_region(target,{'x':0,'y':0,'w':1,'h':1,'rotation':0},company(c,d['company_id']).get('ocr_quality','fast'))
+            return {'field':field,'text':text,'engine':engine,'warning':warning,'values':document_reading.field_proposals(field,text),'region':region,'source_document_id':source['id'],'confirmed':False}
+
+    @app.post('/api/documents/{doc_id}/local-reread')
+    def local_reread(doc_id:str):
+        with db() as c:
+            d=document(c,doc_id);editable(d);quality=company(c,d['company_id']).get('ocr_quality','fast')
+            if d['engine']=='pdf-text':text=d['ocr_text'];engine='pdf-text';warning='';words=advanced.meta(c,doc_id).get('tokens',[])
+            else:
+                path=data/d['image'];text,engine,warning=ocr.recognize(path,quality=quality)
+                if engine in ('failed','unavailable'):fail(warning or 'פענוח מקומי אינו זמין',409)
+                words=vision.tokens(path,quality=quality);text,words,_=document_reading.refine(path,text,words,quality)
+            fields=extract(text,words,company(c,d['company_id'])['tax_id'])
+            sources={key:document_reading.original_region(d,region) for key,region in vision.field_sources(fields,words).items()}
+            result={'fields':fields,'field_sources':sources,'text':text,'engine':engine,'warning':warning,'checks':[],'items':[],'source_document_id':doc_id,'confirmed':False}
+            run=uid();c.execute('INSERT INTO recognition_runs VALUES(?,?,?,?,?)',(run,doc_id,engine,encode(result),now()))
+            return {**result,'id':run}
 
     @app.get('/api/documents/{doc_id}/region-image')
     def region_image(doc_id: str, x: float, y: float, w: float, h: float, rotation: int = 0):

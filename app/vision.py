@@ -4,6 +4,7 @@ import io
 import math
 import os
 import subprocess
+import re
 from pathlib import Path
 
 import cv2
@@ -36,13 +37,16 @@ def preprocess(source, destination):
     return {'quarter_rotation':quarter,'deskew_degrees':round(angle,2),'contrast':'autocontrast'}
 
 
-def tokens(path):
-    cap=ocr.capabilities()
+def tokens(path,quality='fast',psm=3):
+    cap=ocr.capabilities(quality)
     if not cap['available']: return []
-    langs='+'.join(l for l in ('heb','eng') if l in cap['languages'])
+    langs='heb_rivok' if 'heb_rivok' in cap['languages'] else '+'.join(l for l in ('heb','eng') if l in cap['languages'])
     if not langs: return []
     try:
-        result=ocr.run_tesseract([Path(path),'stdout','-l',langs,'--psm','3','tsv'],timeout=60)
+        # Bundled tessdata contains weights, not Tesseract's external config files.
+        # Request TSV explicitly; a missing "tsv" config otherwise returns plain
+        # text with exit code zero and silently loses every source coordinate.
+        result=ocr.run_tesseract([Path(path),'stdout','-l',langs,'--psm',str(psm),'-c','tessedit_create_tsv=1','-c','tessedit_create_txt=0'],quality,timeout=60)
         if result.returncode:return []
         with Image.open(path) as image:w,h=image.size
         output=[]
@@ -121,7 +125,7 @@ def digit_proposal(path):
     return {'engine':'mnist-onnx','available':True,'number':''.join(digits),'confidence':min(confidence),'glyph_confidences':confidence,'boxes':boxes,'confirmed':False,'warning':'מודל ספרות בודדות עם הפרדת תווים. ספרות נוגעות או חופפות מחייבות תיקון; יש לאשר רצף מלא מול המקור.'}
 
 
-def suggested_checks(path,excluded=(),words=None):
+def suggested_checks(path,excluded=(),words=None,propose=None):
     words=tokens(path) if words is None else words
     candidates=[]
     regions=colored_digit_regions(path)
@@ -132,12 +136,21 @@ def suggested_checks(path,excluded=(),words=None):
             x,y,w,h=[region[k] for k in ('x','y','w','h')]
             with tempfile.TemporaryDirectory() as temp:
                 cropped=Path(temp)/'crop.png';image.crop((round(x*image.width),round(y*image.height),round((x+w)*image.width),round((y+h)*image.height))).save(cropped)
-                proposals=[sequence_recognize(cropped,model) for model in ('paddle-v6-small','paddle-v5')]
-            proposal=max((p for p in proposals if p.get('number')),key=lambda p:p.get('confidence',0),default={})
+                proposals=propose(cropped) if propose else [sequence_recognize(cropped,model) for model in ('paddle-v6-small','paddle-v5')]
+            proposal=next((p for p in proposals if p.get('number') and p.get('available') is not False),{}) if propose else max((p for p in proposals if p.get('number')),key=lambda p:p.get('confidence',0),default={})
             candidates.append({'number':proposal.get('number',''),'region':{k:region[k] for k in ('x','y','w','h','rotation')},'engine':proposal.get('engine','colored-ink'),'proposals':proposals,'confirmed':False,'reason':region['reason']})
+    from .extraction import word_rows,role
+    contexts={id(word):(text,row) for text,row in word_rows(words) for word in row}
     for word in words:
         text=word['text'].strip('.,:;#')
         if not text.isascii() or not text.isdigit() or not 4<=len(text)<=12 or text in excluded:continue
+        context,row=contexts.get(id(word),('',[]))
+        labeled=bool(re.search(r'(?:^|\s)(?:שק|שיק|צ[׳\'״"]?ק|check|cheque)(?:\s|:)',context,re.I))
+        isolated=word['y']>.55 and word.get('confidence',1)<.7 and len(row)<=2 and role(context)[0] is None
+        if not (labeled or isolated):continue
+        center=(word['x']+word['w']/2,word['y']+word['h']/2)
+        if any(p['region']['x']<=center[0]<=p['region']['x']+p['region']['w'] and p['region']['y']<=center[1]<=p['region']['y']+p['region']['h'] for p in candidates):continue
+        if any(p['number']==text and abs(p['region']['y']-word['y'])<.02 for p in candidates):continue
         region={k:word[k] for k in ('x','y','w','h','rotation')}
         # Expand enough to retain handwritten ascenders and nearby leading zeros.
         x=max(0,region['x']-.008);y=max(0,region['y']-.008)

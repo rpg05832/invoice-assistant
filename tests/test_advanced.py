@@ -123,7 +123,7 @@ def test_failure_mode_proposes_without_approving(client,company,monkeypatch):
     config={'mode':'on_failure','provider':'openai','model':'test','monthly_budget':'1','max_cost_per_call':'.10','api_key':'test-key'}
     assert client.put(p+'/recognition-settings',json=config).status_code==200
     monkeypatch.setattr('app.ocr.recognize',lambda *a,**k:('','failed','test'))
-    monkeypatch.setattr('app.vision.tokens',lambda *a:[])
+    monkeypatch.setattr('app.vision.tokens',lambda *a,**k:[])
     monkeypatch.setattr('app.cloud.provider_call',lambda *a:{'fields':{'number':'PROPOSED-1'},'checks':[],'items':[]})
     content=io.BytesIO();Image.new('RGB',(400,400),'white').save(content,'PNG')
     response=client.post(p+'/upload',files={'file':('empty.png',content.getvalue(),'image/png')})

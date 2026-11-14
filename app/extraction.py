@@ -52,9 +52,9 @@ def kind_for(lines):
 
 
 def role(line):
-    label=flat(line)
+    label=re.sub('[0-9]','',flat(line)).replace('מעם','מעמ')
     if any(s in label for s in ('יתרה','חובכולל','ששולם','מחיריחידה','ליחידה','סכוםששולם')):return None,0
-    if any(s in label for s in ('לפנימעמ','ללאמעמ','מחיראחריהנחה','subtotal','סהכבשורות')):return 'net',10
+    if any(s in label for s in ('לפנימעמ','ללאמעמ','בלימעמ','לאמעמ','לואמעמ','מחיראחריהנחה','subtotal','סהכבשורות')):return 'net',10
     if ('מעמ' in label or label in ('vat','vatamount','taxamount')) and not any(s in label for s in ('כוללמעמ','שחכולל','תיקבמעמ','עוסק','שחכוללמעמ')):
         return 'vat',8
     if any(s in label for s in ('סהכלתשלום','סהכמחיר','סהככוללמעמ','סךהכול','סךהכללחיוב','total')):
@@ -62,6 +62,36 @@ def role(line):
         return 'total',12 if any(s in label for s in ('לתשלום','לחיוב')) else 8
     if label in ('סהכ','סךהכל') or label.startswith('סהכלקבלה'):return 'total',8
     return None,0
+
+
+def word_rows(words):
+    """Rebuild spatial rows before classifying multiword Hebrew amount labels."""
+    rows=[]
+    for word in sorted(words,key=lambda w:w['y']+w['h']/2):
+        center=word['y']+word['h']/2
+        row=next((r for r in reversed(rows) if abs(r[0]-center)<=max(.0035,min(r[1],word['h'])*.55)),None)
+        if row:row[2].append(word)
+        else:rows.append([center,word['h'],[word]])
+    for _,_,row in rows:
+        hebrew=any(re.search('[א-ת]',w['text']) for w in row)
+        yield ' '.join(w['text'] for w in sorted(row,key=lambda w:w['x'],reverse=hebrew)),row
+
+
+def supplier_name(lines):
+    explicit=re.search(r'(?:שם\s+(?:הספק|ספק)|supplier\s*name)\s*[:：]\s*(.+)','\n'.join(lines),re.I)
+    if explicit:return explicit[1].strip()
+    candidates=[]
+    for index,line in enumerate(lines[:12]):
+        if re.search(TITLE,line,re.I) or flat(line).startswith(('לכבוד','billto','לקוח')):break
+        name=re.split(r'(?:עוסק\s*מורשה|עוסק\s*פטור|מספר\s*עוסק|ח[.״"\']?פ[.״"\']?\s*[:：]|VAT\s*ID)',line,flags=re.I)[0].strip(' |:')
+        if re.search(r'טלפון|פקס|כתובת|רחוב|תאריך|מספר|subtotal|total|vat\b',name,re.I) or re.search(r'\d',name):continue
+        if len(re.findall(r'[א-תA-Za-z]{2,}',name))>=2:candidates.append(name)
+    if candidates:return candidates[0]
+    for index,line in enumerate(lines[:-1]):
+        if flat(line).startswith('מפיקהמסמך'):
+            candidate=lines[index+1].strip(' .|')
+            if len(re.findall('[א-תA-Za-z]{2,}',candidate))>=2 and not re.search(r'\d|חתימה|תאריך|שם המקבל|מסמך זה',candidate):return candidate
+    return ''
 
 
 def currency_for(lines):
@@ -86,12 +116,13 @@ def parse(text,fields,words=None,company_tax_id=''):
     lines=[line.strip() for line in text.splitlines() if line.strip()]
     result=dict.fromkeys(fields,'');result.update(currency=currency_for(lines),kind=kind_for(lines))
     result['purpose']='supplier_invoice' if result['kind'] in ('invoice','tax_receipt','credit') else 'reconciliation'
+    result['supplier_name']=supplier_name(lines)
     numbers=[]
     for index,line in enumerate(lines):
-        patterns=[(rf'^\s*{TITLE}\s*(?:מספר|מס[׳\"\'.]?|No\.?)?\s*[:#-]?\s*({IDENTIFIER})',12),(rf'^\s*מספר\s*[:#]\s*({IDENTIFIER})',9),(rf'(?:מספר\s+חשבונית|ברקוד\s+מספר\s+חשבונית)\s*[:#]?\s*[*\"\s]*({IDENTIFIER})',11),(rf'^מספר\s+תעודה\s*[:#]?\s*({IDENTIFIER})',5),(rf'^אסמכתא\s+לתשלום\s+מס\s*[:#]?\s*({IDENTIFIER})',8)]
+        patterns=[(rf'^\s*{TITLE}\s*(?:מספר|מס[׳\"\'.]?|No\.?)?\s*[:#-]?\s*({IDENTIFIER})',12),(rf'(?:^|\s)מספר\s*[:#]\s*({IDENTIFIER})',9 if 'חשבונית' in line or line.startswith('מספר') else 0),(rf'(?:מספר\s+חשבונית|ברקוד\s+מספר\s+חשבונית)\s*[:#]?\s*[*\"\s]*({IDENTIFIER})',11),(rf'^מספר\s+תעודה\s*[:#]?\s*({IDENTIFIER})',5),(rf'^אסמכתא\s+לתשלום\s+מס\s*[:#]?\s*({IDENTIFIER})',8)]
         for pattern,score in patterns:
             match=re.search(pattern,line,re.I)
-            if match and not DATE.fullmatch(match[1]) and any(c.isdigit() for c in match[1]):numbers.append((score-index/10000,match[1]))
+            if score and match and not DATE.fullmatch(match[1]) and any(c.isdigit() for c in match[1]):numbers.append((score-index/10000,match[1]))
     if numbers:result['number']=max(numbers)[1]
     date_candidates=[];due=[]
     for index,line in enumerate(lines):
@@ -135,14 +166,11 @@ def parse(text,fields,words=None,company_tax_id=''):
                 add(key,value,priority-abs(offset)*1.5+index/max(1,len(lines))*2)
     # Geometry associates label and amount columns even when OCR reading order differs.
     if words:
-        for word in words:
-            key,priority=role(word['text'])
+        for row_text,row in word_rows(words):
+            key,priority=role(row_text)
             if not key:continue
-            center=word['y']+word['h']/2
-            for other in words:
-                distance=abs(other['y']+other['h']/2-center)
-                if distance>max(.009,word['h']*.65,other['h']*.65):continue
-                for value in amounts(other['text']):add(key,value,priority+5-distance*100+word['y']*2)
+            for other in row:
+                for value in amounts(other['text']):add(key,value,priority+5+other['y']*2)
     observed={value for line in lines for value in amounts(line)}
     # Recover a missing component only when that exact amount was actually read.
     for net,total in itertools.product(list(candidates['net']),list(candidates['total'])):

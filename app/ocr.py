@@ -81,12 +81,12 @@ def capabilities(quality='fast'):
     except subprocess.TimeoutExpired:return {**result,'reason':'timeout','detail':'מנוע OCR לא השיב בזמן הבדיקה'}
     except OSError as exc:return {**result,'reason':'launch_error','detail':str(exc)[:1200]}
 
-def recognize(path, digits=False, quality='fast'):
+def recognize(path, digits=False, quality='fast', psm=None):
     cap = capabilities(quality)
     if not cap['available']: return '', 'unavailable', 'מנוע OCR אינו מותקן; אפשר להזין שדות ידנית'
     langs = 'heb_rivok' if quality=='rivok' and 'heb_rivok' in cap['languages'] else '+'.join(x for x in ('heb', 'eng') if x in cap['languages'])
     if not langs: return '', 'unavailable', 'לא מותקנות שפות עברית או אנגלית'
-    arguments = [Path(path),'stdout','-l',langs,'--psm','6' if digits else '3']
+    arguments = [Path(path),'stdout','-l',langs,'--psm',str(psm if psm in (3,6,7,11) else 6 if digits else 3)]
     if digits: arguments += ['-c', 'tessedit_char_whitelist=0123456789']
     try:
         result = run_tesseract(arguments,quality,timeout=60)
@@ -108,8 +108,10 @@ def self_test():
     draw.text((600,80),'חשבונית מס'[::-1],font=font,fill='black');draw.text((600,200),'ספק בדיקה'[::-1],font=font,fill='black');draw.text((600,400),'00001234',font=font,fill='black')
     with tempfile.TemporaryDirectory(prefix='invoice-ocr-check-') as directory:
         path=Path(directory)/'בדיקת עברית.png';image.save(path);text,engine,warning=recognize(path)
-    ok=engine=='tesseract' and 'חשבונית' in text and '00001234' in text
-    return {'ok':ok,'engine':engine,'sample_text':text,'message':'העברית והספרות נקראו בהצלחה' if ok else 'בדיקת הקריאה לא הושלמה בהצלחה','warning':warning,'capabilities':capabilities()}
+        from .vision import tokens
+        words=tokens(path)
+    ok=engine=='tesseract' and 'חשבונית' in text and '00001234' in text and any(w['text']=='00001234' for w in words)
+    return {'ok':ok,'engine':engine,'sample_text':text,'word_count':len(words),'message':'העברית והספרות נקראו בהצלחה' if ok else 'בדיקת הקריאה לא הושלמה בהצלחה','warning':warning,'capabilities':capabilities()}
 
 def normalize_image(source, destination):
     with Image.open(source) as img:

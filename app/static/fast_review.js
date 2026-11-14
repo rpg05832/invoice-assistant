@@ -54,7 +54,7 @@ function reviewIssueFocus(){
  let control=$('[data-check-confirmed]:not(:checked)');
  if(!control){
   const issues=(state.current?.issues||[]).join(' ');
-  const fields=[[/מספר מסמך/,'number'],[/תאריך המסמך/,'date'],[/תאריך הפירעון/,'due_date'],[/כרטיס ספק|שאלת האישור/,'supplier_id'],[/מספר העוסק/,'supplier_tax_id'],[/לחברה אחרת/,'recipient_tax_id'],[/מטבע/,'currency'],[/סכומ|מסתכמים|סך הכול/,'total'],[/סוג המסמך/,'kind'],[/כרטיס הוצאה/,'expense_account'],[/כרטיס מע״מ/,'vat_account'],[/יעד המסמך/,'purpose']];
+  const fields=[[/אזורי ספרות|בדיקת הצ׳קים/,'check_candidates_reviewed'],[/עם ובלי מע״מ/,'amount_reviewed'],[/מספר מסמך/,'number'],[/תאריך המסמך/,'date'],[/תאריך הפירעון/,'due_date'],[/כרטיס ספק|שאלת האישור/,'supplier_id'],[/מספר העוסק/,'supplier_tax_id'],[/לחברה אחרת/,'recipient_tax_id'],[/מטבע/,'currency'],[/סכומ|מסתכמים|סך הכול/,'total'],[/סוג המסמך/,'kind'],[/כרטיס הוצאה/,'expense_account'],[/כרטיס מע״מ/,'vat_account'],[/יעד המסמך/,'purpose']];
   const match=fields.find(([pattern])=>pattern.test(issues));control=$('#review-form').elements.namedItem(match?.[1]||'number');
  }
  control?.focus();control?.scrollIntoView({block:'center'});

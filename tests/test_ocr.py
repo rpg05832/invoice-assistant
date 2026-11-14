@@ -24,6 +24,10 @@ def test_real_hebrew_ocr_and_image_upload(client,company,tmp_path):
     file=tmp_path/'scan.png';image.save(file)
     text,engine,warning=ocr.recognize(file)
     assert engine=='tesseract' and 'חשבונית' in text and '00001234' in text
+    from app import vision
+    words=vision.tokens(file)
+    assert any(w['text']=='00001234' for w in words), 'Bundled weights must produce TSV coordinates without external config files'
+    assert vision.field_sources({'number':'00001234'},words)['number']['w']>0
     response=client.post(f"/api/companies/{company['id']}/upload",files={'file':('סריקה.png',file.read_bytes(),'image/png')})
     assert response.status_code==200
     doc=client.get(f"/api/companies/{company['id']}/documents").json()[0]

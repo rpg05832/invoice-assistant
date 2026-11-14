@@ -508,3 +508,84 @@ def test_browser_model_download_guidance_and_indra_terms(browser_app):
     expect(page.locator('#model-indra-form [name=accepted]')).not_to_be_checked()
     page.get_by_role('button',name='סגירה',exact=True).last.click()
     assert page.request.get(path+'/recognition-settings').json()['mode']=='off'
+
+
+def test_browser_inline_region_review_accept_reject_and_rescan(browser_app):
+    page,url,directory=browser_app
+    company,path,docs=seed_fast_review(page,url,'פענוח ליד השדה',count=1);doc=docs[0]
+    writer=page.request.post(path+'/learning/writers',data={'name':'סגנון הצ׳ק'}).json()['id']
+    document_writer=page.request.post(path+'/learning/writers',data={'name':'סגנון המסמך'}).json()['id']
+    requested_writers=[]
+    def check_proposal(route):
+        body=route.request.post_data_json
+        requested_writers.append(body.get('writer_id'))
+        route.fulfill(json={'number':'00002468','engine':'engine-a','confirmed':False,'region':body['region'],'source_document_id':doc['id'],'proposals':[{'engine':'engine-a','number':'00002468'},{'engine':'engine-b','number':'00002469'}]})
+    def field_proposal(route):
+        body=route.request.post_data_json
+        route.fulfill(json={'field':body['field'],'values':['07/000531'],'engine':'tesseract','text':'07/000531','confirmed':False,'region':body['region'],'source_document_id':doc['id']})
+    page.route(url+'/api/documents/'+doc['id']+'/check-region',check_proposal)
+    page.route(url+'/api/documents/'+doc['id']+'/field-region',field_proposal)
+    def select_region():
+        image=page.locator('#source-image');image.evaluate('img=>img.decode()');page.locator('.document-preview').evaluate('el=>{el.scrollTop=0}');r=image.bounding_box()
+        page.mouse.move(r['x']+.06*r['width'],r['y']+.04*r['height']);page.mouse.down();page.mouse.move(r['x']+.45*r['width'],r['y']+.16*r['height'],steps=6);page.mouse.up()
+        expect(page.locator('#inline-region-value')).to_be_visible(timeout=30000)
+    try:
+        page.goto(url);expect(page.locator('#dropzone')).to_be_visible();page.locator('#company').select_option(company['id'])
+        page.get_by_role('button',name='בדיקה מהירה · 1 ממתינים',exact=True).click()
+        page.get_by_role('button',name='סימון ופענוח צ׳ק',exact=True).click();select_region()
+        expect(page.locator('#inline-region-value')).to_have_value('00002468')
+        assert page.locator('[data-check-number]').count()==0, 'A draft must not silently create a check'
+        page.locator('#inline-region-value').fill('1');expect(page.locator('#inline-region-value')).to_have_value('1')
+        page.locator('#field-number').press('Enter')
+        expect(page.locator('#toast')).to_contain_text('אשרו או דחו תחילה')
+        assert page.request.get(path+'/documents').json()[0]['status']=='review'
+        page.get_by_role('button',name='דחייה וחזרה לשדה',exact=True).click()
+        assert page.locator('[data-check-number]').count()==0
+        page.get_by_role('button',name='סימון ופענוח צ׳ק',exact=True).click();select_region()
+        page.locator('[data-region-choice="1"]').click()
+        page.get_by_role('button',name='אישור מספר הצ׳ק',exact=True).click()
+        expect(page.get_by_label('מספר צ׳ק 1',exact=True)).to_have_value('00002469')
+        expect(page.get_by_label('בדקתי',exact=True)).to_be_checked()
+        page.locator('[data-check-writer="0"]').select_option(writer)
+        page.locator('#learning-writer').select_option(document_writer)
+        page.locator('[data-region-check="0"]').click();select_region()
+        assert requested_writers[-1]==writer, 'A per-check handwriting profile must override the document profile'
+        page.get_by_role('button',name='אישור מספר הצ׳ק',exact=True).click()
+        assert page.locator('[data-check-number]').count()==1, 'Rescanning replaces the selected check'
+        expect(page.get_by_label('מספר צ׳ק 1',exact=True)).to_have_value('00002468')
+        previous=page.locator('#field-number').input_value()
+        page.locator('[data-region-field="number"]').click();select_region()
+        expect(page.locator('#field-number')).to_have_value(previous)
+        page.locator('#inline-region-value').press('Enter')
+        expect(page.locator('#field-number')).to_have_value('07/000531')
+        page.screenshot(path='test-results/inline-region-review.png',full_page=True)
+        page.keyboard.press('Escape');expect(page.locator('#modal')).not_to_be_visible()
+        saved=page.request.get(path+'/documents').json()[0]
+        assert saved['fields']['number']=='07/000531' and saved['checks'][0]['confirmed'] and saved['status']=='review'
+        assert saved['field_sources']['number']['w']>.3, 'The loupe must retain the newly accepted source area'
+    finally:
+        page.unroute(url+'/api/documents/'+doc['id']+'/check-region')
+        page.unroute(url+'/api/documents/'+doc['id']+'/field-region')
+
+
+def test_browser_local_reread_keeps_unsaved_work_and_copies_selected_fields(browser_app):
+    page,url,directory=browser_app
+    company,path,docs=seed_fast_review(page,url,'פענוח חוזר למסמך קיים',count=1);doc=docs[0]
+    page.goto(url);expect(page.locator('#dropzone')).to_be_visible();page.locator('#company').select_option(company['id'])
+    page.get_by_role('button',name='בדיקה מהירה · 1 ממתינים',exact=True).click()
+    page.locator('#field-number').fill('UNSAVED-EDIT');page.locator('#field-notes').fill('להשאיר את ההערה שלי')
+    page.get_by_role('button',name='פענוח מקומי חוזר למסמך',exact=True).click()
+    expect(page.locator('[data-local-reread-field="number"]')).to_be_visible()
+    expect(page.locator('#region-reading-draft')).to_contain_text('UNSAVED-EDIT')
+    expect(page.locator('#field-number')).to_have_value('UNSAVED-EDIT')
+    assert page.request.get(path+'/documents').json()[0]['fields']['number']==doc['fields']['number']
+    page.get_by_role('button',name='דחייה וחזרה לטופס',exact=True).click()
+    expect(page.locator('#field-number')).to_have_value('UNSAVED-EDIT')
+    page.get_by_role('button',name='פענוח מקומי חוזר למסמך',exact=True).click()
+    expect(page.locator('[data-local-reread-field="number"]')).to_be_visible()
+    page.locator('[data-local-reread-field="number"]').check()
+    page.get_by_role('button',name='העתקת השדות שסומנו לבדיקה',exact=True).click()
+    expect(page.locator('#field-number')).to_have_value(doc['fields']['number'])
+    expect(page.locator('#field-notes')).to_have_value('להשאיר את ההערה שלי')
+    assert page.request.get(path+'/documents').json()[0]['status']=='review'
+    page.keyboard.press('Escape');expect(page.locator('#modal')).not_to_be_visible()

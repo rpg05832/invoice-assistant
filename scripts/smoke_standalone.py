@@ -39,6 +39,7 @@ def exercise(command,directory,port,source=False,incoming=None):
         assert response.json()['ocr']['hebrew']
         reading=client.post('/api/ocr/self-test');assert reading.is_success and reading.json()['ok'],reading.text
         assert 'חשבונית' in reading.json()['sample_text'] and '00001234' in reading.json()['sample_text']
+        assert reading.json()['word_count']>0, 'Packaged OCR must return source coordinates without external configs'
         assert client.get('/api/companies').json()==[], 'Fresh install inherited company data'
         company=client.post('/api/companies',json={'name':'Standalone personal test'}).json();prefix=f"/api/companies/{company['id']}/learning"
         fresh=client.get(prefix).json();assert fresh['examples']==fresh['models']==fresh['writers']==[]
@@ -64,6 +65,11 @@ def exercise(command,directory,port,source=False,incoming=None):
             draw.text((40,40),'00002468',font=font,fill='black');buffer=io.BytesIO();image.save(buffer,'PNG')
             upload=client.post(f"/api/companies/{company['id']}/upload",files={'file':('synthetic.png',buffer.getvalue(),'image/png')});assert upload.is_success,upload.text
             ident=upload.json()['ids'][0];doc=client.get(f"/api/companies/{company['id']}/documents").json()[0]
+            reread=client.post('/api/documents/'+ident+'/field-region',json={'field':'number','region':{'x':0,'y':0,'w':1,'h':1,'rotation':0}})
+            assert reread.is_success and '00002468' in reread.json()['values'],reread.text
+            whole=client.post('/api/documents/'+ident+'/local-reread')
+            assert whole.is_success and '00002468' in whole.json()['text'],whole.text
+            assert client.get(f"/api/companies/{company['id']}/documents").json()[0]['revision']==doc['revision']
             reply=client.patch('/api/documents/'+ident,json={'revision':doc['revision'],'checks':[{'number':'00002468','confirmed':True,'region':{'x':0,'y':0,'w':1,'h':1,'rotation':0}}]});assert reply.is_success,reply.text
             assert client.put('/api/documents/'+ident+'/review-flag',json={'marked':True,'note':'Synthetic review marker'}).is_success
         job=client.post(prefix+'/train',json={'epochs':1,'auto_activate':False});assert job.is_success,job.text
