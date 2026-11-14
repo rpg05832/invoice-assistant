@@ -1,0 +1,46 @@
+{
+  "glm-ocr": {
+    "repo": "ggml-org/GLM-OCR-GGUF",
+    "revision": "65a42de1148dbed2297e922b5dbc7d9b70c36578",
+    "files": {
+      "GLM-OCR-Q8_0.gguf": "45bc244a6446aff850521dc41f18bc8d7105ad5f0c2c8c28af04e7cc4f4d50b1",
+      "mmproj-GLM-OCR-Q8_0.gguf": "9c4b58e33e316ed142eb5dcb41abec3844d3e6e5dc361ffb782c3fa9d175141f"
+    },
+    "license": "MIT",
+    "digits_only": true,
+    "upstream": "https://huggingface.co/zai-org/GLM-OCR"
+  },
+  "paddle-vl16": {
+    "repo": "PaddlePaddle/PaddleOCR-VL-1.6-GGUF",
+    "revision": "511b09642bb324401f15f97cc23bc67e8f0a291d",
+    "files": {
+      "PaddleOCR-VL-1.6-GGUF.gguf": "f3ae46ec885050acf4b3d31944431e1fd90d50664fb09126af4a3c050ba14ee8",
+      "PaddleOCR-VL-1.6-GGUF-mmproj.gguf": "204d757d7610d9b3faab10d506d69e5b244e32bf765e2bab2d0167e65e0a058a"
+    },
+    "license": "Apache-2.0",
+    "digits_only": true,
+    "upstream": "https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6"
+  },
+  "qwen35-08": {
+    "repo": "unsloth/Qwen3.5-0.8B-GGUF",
+    "revision": "6ab461498e2023f6e3c1baea90a8f0fe38ab64d0",
+    "files": {
+      "Qwen3.5-0.8B-Q8_0.gguf": "0ad885ffd4bb022fc4f0d33a3308fa108ef8613159d3b3a67e23abca056b7a6c",
+      "mmproj-F16.gguf": "56e4c6cfe73b0c82e3e82bc518d7591997e61d81f723fc41a586f4fa69ea2453"
+    },
+    "license": "Apache-2.0",
+    "digits_only": true,
+    "upstream": "https://huggingface.co/Qwen/Qwen3.5-0.8B"
+  },
+  "lighton": {
+    "repo": "ggml-org/LightOnOCR-2-1B-GGUF",
+    "revision": "7d4daf70c2856a155b1413def00f4ae59843a9cf",
+    "files": {
+      "LightOnOCR-2-1B-Q8_0.gguf": "f4cfc0ea9765a4cac22a235191c48aefa94df223419f5ab658b6201f36206d58",
+      "mmproj-LightOnOCR-2-1B-Q8_0.gguf": "e9b45eb85b0f0afb3cc138236eec7adb75879420130e5e2049ee9af3f24e337f"
+    },
+    "digits_only": true,
+    "license": "Apache-2.0",
+    "upstream": "https://huggingface.co/lightonai/LightOnOCR-2-1B"
+  }
+}

@@ -1,0 +1,86 @@
+name: Validate local invoice workflow
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  acceptance:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - run: python -m pip install -r requirements.lock
+      - name: Install Tesseract on Linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y tesseract-ocr
+      - name: Install Tesseract on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install tesseract --yes --no-progress
+          choco install innosetup --yes --no-progress
+          "$env:ProgramFiles\Tesseract-OCR" >> $env:GITHUB_PATH
+      - run: python scripts/setup_ocr.py
+      - run: python scripts/setup_digits.py
+      - run: python scripts/setup_sequences.py
+      - run: python -m playwright install --with-deps chromium
+      - run: python -m pytest -q
+      - name: Build Windows source bundle
+        if: runner.os == 'Windows'
+        run: python scripts/package_windows.py
+      - name: Build standalone Windows application
+        if: runner.os == 'Windows'
+        run: |
+          python -m pip install pyinstaller==6.16.0
+          python scripts/build_windows.py
+      - name: Smoke test standalone Windows OCR and personal training
+        if: runner.os == 'Windows'
+        run: python scripts/smoke_standalone.py dist/InvoiceAssistant/InvoiceAssistant.exe
+      - name: Build single-file per-user Windows installer
+        if: runner.os == 'Windows'
+        run: python scripts/build_installer.py
+      - name: Test installed app and data-preserving uninstall
+        if: runner.os == 'Windows'
+        run: python scripts/smoke_installer.py dist/InvoiceAssistant-Setup-0.1.0-x64.exe
+      - name: Upload tested Windows installer
+        if: success() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: InvoiceAssistant-Setup-Windows-x64
+          path: |
+            dist/*Setup*.exe
+            dist/*.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-${{ matrix.os }}
+          path: |
+            test-results/
+            dist/*.zip
+  publish_installer:
+    needs: acceptance
+    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'work/full-spec')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - uses: actions/download-artifact@v4
+        with:
+          name: InvoiceAssistant-Setup-Windows-x64
+          path: tested-installer
+      - run: python scripts/publish_installer.py tested-installer
+        env: {GITHUB_TOKEN: '${{ github.token }}'}
