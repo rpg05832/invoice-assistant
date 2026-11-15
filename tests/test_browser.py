@@ -843,7 +843,7 @@ def test_browser_linked_folder_scan_relink_clear_and_delete_preserves_original(b
     moved=directory/'מקורות עברו מחשב';root.rename(moved)
     page.get_by_role('button',name='עדכון מיקום התיקייה').click()
     page.locator('#folder-new-path').fill(str(moved));page.get_by_role('button',name='שמירת מיקום התיקייה').click()
-    expect(page.locator('.folder-row')).to_contain_text(str(moved))
+    expect(page.locator('.folder-row')).to_contain_text(os.path.normcase(str(moved.resolve())))
     page.get_by_role('button',name='מעבר למסמכים לאישור',exact=True).click()
     page.get_by_role('button',name='פתיחה ←',exact=True).first.click()
     expect(page.locator('#source-image')).to_be_visible();expect(page.locator('#field-number')).to_have_value('FOLDER-001')
