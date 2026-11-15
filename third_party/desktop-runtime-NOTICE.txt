@@ -1,0 +1,7 @@
+Desktop window dependencies:
+pywebview 6.2.1 (BSD 3-Clause), pythonnet 3.2.1 (MIT), clr_loader 0.3.1 (MIT), bottle 0.13.4 (MIT), proxy_tools 0.1.0 (MIT).
+Their original license texts accompany this distribution.
+
+The Windows installer includes the original Microsoft-signed offline Microsoft Edge WebView2 Runtime installer. The runtime is Microsoft software and is subject to its Microsoft Software License Terms. Its installer is distributed unmodified and verified with Windows Authenticode during the build.
+Runtime and license information: https://developer.microsoft.com/microsoft-edge/webview2/
+Offline installer source: https://go.microsoft.com/fwlink/?linkid=2124701
