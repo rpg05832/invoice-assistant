@@ -8,6 +8,21 @@ function regionHost(context){
 }
 function regionActive(context){return state.inlineRegion===context&&state.current?.id===context.document&&state.company?.id===context.company&&Boolean($('#review-form'));}
 function dismissInlineRegion(){state.inlineRegion=null;$('#region-reading-draft')?.remove();state.mode=null;updateReviewControls();}
+function finishSingleCheckCandidate(context){
+ if(context?.candidateIndex===0&&state.current?.suggested_checks?.length===1){const checkbox=$('[name="check_candidates_reviewed"]');if(checkbox){checkbox.checked=true;checkbox.dispatchEvent(new Event('change',{bubbles:true}));}}
+}
+function confirmSingleDetectedCheck(){
+ const proposals=state.current?.suggested_checks||[],reviewed=$('[name="check_candidates_reviewed"]');
+ if(proposals.length!==1||!reviewed||reviewed.checked)return true;
+ const candidate=proposals[0];
+ const numbers=[candidate.number,...(candidate.proposals||[]).filter(p=>p.available!==false).map(p=>p.number)].filter(Boolean);
+ const unique=[...new Set(numbers)];
+ if(unique.length!==1||!/^\d{1,30}$/.test(String(unique[0]))){openInlineCandidate(candidate);return false;}
+ if(!state.checks.length){state.checks.push(normalizeCheckReason({...candidate,confirmed:true}));renderChecks();}
+ else if(state.checks.length!==1||state.checks[0].number!==candidate.number)return true;
+ else if(!state.checks[0].confirmed){state.checks[0].confirmed=true;renderChecks();}
+ reviewed.checked=true;reviewed.dispatchEvent(new Event('change',{bubbles:true}));return true;
+}
 function inlineDraft(context,result=null){
  $('#region-reading-draft')?.remove();const host=regionHost(context);if(!host)return;
  const box=document.createElement('section');box.id='region-reading-draft';box.className='region-reading-draft';box.dataset.reviewNoApprove='';box.setAttribute('aria-label','בדיקת פענוח האזור');
@@ -15,7 +30,7 @@ function inlineDraft(context,result=null){
  context.result=result;
  const choices=context.field==='check'?(result.proposals||[]).filter(p=>p.number&&p.available!==false).map(p=>({value:p.number,engine:p.engine})):result.values.map(value=>({value,engine:result.engine}));
  context.choices=choices.filter((p,i)=>choices.findIndex(q=>q.value===p.value)===i).slice(0,20);
- const value=context.field==='check'?result.number:context.choices.length===1?context.choices[0].value:'';
+ const value=context.field==='check'?(result.number||(context.choices.length===1?context.choices[0].value:'')):context.choices.length===1?context.choices[0].value:'';
  box.innerHTML=`<strong>${context.field==='check'?'בדיקת מספר הצ׳ק':'בדיקת '+esc(fieldLabels[context.field])}</strong><img class="check-preview" alt="האזור שסומן לפענוח" src="/api/documents/${result.source_document_id}/region-image?${new URLSearchParams(result.region)}"><p>השוו למקור, בחרו הצעה או תקנו, ואז אשרו. דחייה משאירה את הנתונים הקיימים.</p><div class="region-reading-choices" tabindex="0" aria-label="בחירת הצעה במקש 1 עד 9">${context.choices.map((p,i)=>`<button type="button" data-region-choice="${i}">${i<9?i+1+' · ':''}${esc(p.value)} · ${esc(p.engine)}</button>`).join('')}</div><label for="inline-region-value">הערך שבדקתי מול המקור</label><input id="inline-region-value" value="${esc(value||'')}" dir="${context.field==='supplier_name'?'auto':'ltr'}" maxlength="${context.field==='check'?30:4000}" ${context.field==='check'?'inputmode="numeric"':''}><div class="inline"><button type="button" class="primary" data-action="region-accept">${context.field==='check'?'אישור מספר הצ׳ק':'אישור והעתקה לשדה'}</button><button type="button" data-action="region-dismiss">דחייה וחזרה לשדה</button><button type="button" data-action="region-redraw">סימון אזור מחדש</button>${context.field==='check'?'<button type="button" data-action="region-additional">השוואה במנוע הנוסף שבחרתי</button>':''}</div>`;
  host.append(box);box.scrollIntoView({block:'nearest'});$('#inline-region-value').focus({preventScroll:true});
 }
@@ -42,6 +57,7 @@ function acceptInlineRegion(){
   if(!/^[0-9]{1,30}$/.test(value))throw Error('מספר צ׳ק חייב להכיל ספרות בלבד, כולל אפסים מובילים');
   const selected=context.choices.find(p=>p.value===value);
   const check={...context.check,...result,number:value,engine:selected?.engine||'manual',confirmed:true};
+  finishSingleCheckCandidate(context);
   if(context.check){const index=state.checks.indexOf(context.check);if(index<0)throw Error('הצ׳ק השתנה בזמן הפענוח; סמנו אותו שוב');state.checks[index]=check;}else state.checks.push(check);
   dismissInlineRegion();renderChecks();const input=$(`[data-check-number="${context.check?state.checks.indexOf(check):state.checks.length-1}"]`);input?.focus();
  }else{
@@ -56,7 +72,7 @@ function renderInlineCandidates(candidates){
  state.inlineCheckCandidates=candidates;$('#checks').insertAdjacentHTML('beforebegin',`<section id="inline-check-candidates" class="notice"><strong>${candidates.length} הצעות מהעמוד — בדקו את השיוך לחשבונית</strong><div class="inline">${candidates.map((p,i)=>`<button type="button" data-region-candidate="${i}">${esc(p.number||'אזור כתב יד')} · הצגת מקור ובדיקה</button>`).join('')}</div></section>`);$('#inline-check-candidates').scrollIntoView({block:'nearest'});
 }
 function openInlineCandidate(proposal){
- dismissInlineRegion();const context={field:'check',index:null,check:null,document:state.current.id,company:state.company.id};state.inlineRegion=context;
+ dismissInlineRegion();const context={field:'check',index:null,check:null,candidateIndex:state.current.suggested_checks.indexOf(proposal),document:state.current.id,company:state.company.id};state.inlineRegion=context;
  const result={...proposal,source_document_id:proposal.source_document_id||state.current.id,proposals:proposal.proposals||[{number:proposal.number,engine:proposal.engine}]};
  showCheckSource(result.region,result.source_document_id);inlineDraft(context,result);
 }
@@ -92,11 +108,11 @@ Object.assign(actions,{
   for(const field of selected){const input=$('#review-form').elements.namedItem(field);if(!input||input.disabled)continue;input.value=context.result.fields[field];input.dispatchEvent(new Event('input',{bubbles:true}));const source=context.result.field_sources[field];if(source){const {source_document_id,...region}=source;state.learningRegions[field]={region,source_document_id};state.current.field_sources[field]=source;}}
   dismissInlineRegion();paintReviewChanges();toast('ההצעות שסימנתם הועתקו לטופס לבדיקה. החשבונית עדיין לא אושרה.');
  },
- 'region-dismiss':()=>dismissInlineRegion(),
+ 'region-dismiss':()=>{if(state.inlineRegion?.result)finishSingleCheckCandidate(state.inlineRegion);dismissInlineRegion();},
  'region-additional':async()=>{const context=state.inlineRegion;if(!context?.result||context.busy)return;context.busy=true;try{const value=await api(`/documents/${context.document}/recognize`,{method:'POST',body:{confirmed:true,action:'check',region:context.result.region,source_document_id:context.result.source_document_id}});if(regionActive(context)){const result={...context.result,proposals:[...context.result.proposals,...value.checks.map(number=>({engine:value.engine,number}))]};inlineDraft(context,result);}}finally{context.busy=false;}},
  'region-accept':()=>acceptInlineRegion(),
  'region-redraw':()=>{const c=state.inlineRegion;if(c)beginInlineRegion(c.field,c.index);},
- 'suggest-checks':async()=>{const id=state.current.id,result=await api(`/documents/${id}/check-suggestions`,{method:'POST'});if(state.current?.id===id&&$('#review-form'))renderInlineCandidates(result.candidates);}
+ 'suggest-checks':async()=>{const id=state.current.id,result=await api(`/documents/${id}/check-suggestions`,{method:'POST'});if(state.current?.id!==id||!$('#review-form'))return;state.current.suggested_checks=result.candidates;if(result.revision)state.current.revision=result.revision;if(result.changed)state.current.check_candidates_reviewed=false;const initial=$('#initial-check-suggestions');initial?.remove();$('#inline-check-candidates')?.remove();if(result.candidates.length){$('#checks').insertAdjacentHTML('beforebegin',`<section id="initial-check-suggestions"><h3>הצעות מהעמוד ומהשוליים</h3><div class="inline">${result.candidates.map((p,i)=>`<button type="button" data-auto-check="${i}">${esc(p.number||'אזור כתב יד')} · הצגת מקור ובדיקה</button>`).join('')}</div><label class="inline"><input type="checkbox" name="check_candidates_reviewed" ${state.current.check_candidates_reviewed?'checked':''}>בדקתי את כל ההצעות, הוספתי צ׳קים רלוונטיים וביטלתי הצעות שאינן צ׳קים</label></section>`);}toast(result.candidates.length?`${result.candidates.length} אזורי צ׳קים מוצעים לבדיקה`:'לא נמצאו הצעות ברורות. אפשר לסמן אזור או להקליד ידנית.');paintReviewChanges();}
 });
 document.addEventListener('click',e=>{
  const button=e.target.closest('button');if(!button)return;
@@ -104,9 +120,10 @@ document.addEventListener('click',e=>{
  if(button.dataset.regionCheck!==undefined)beginInlineRegion('check',Number(button.dataset.regionCheck));
  if(button.dataset.regionField)beginInlineRegion(button.dataset.regionField);
  if(button.dataset.regionCandidate!==undefined)openInlineCandidate(state.inlineCheckCandidates[Number(button.dataset.regionCandidate)]);
- if(button.dataset.regionChoice!==undefined){const p=state.inlineRegion?.choices[Number(button.dataset.regionChoice)];if(p)$('#inline-region-value').value=p.value;}
+ if(button.dataset.regionChoice!==undefined){const p=state.inlineRegion?.choices[Number(button.dataset.regionChoice)];if(p){$('#inline-region-value').value=p.value;$('#inline-region-value').focus();}}
 },true);
 document.addEventListener('keydown',e=>{
+ if(e.target.matches('[data-region-choice]')&&e.key==='Enter'){e.preventDefault();e.stopImmediatePropagation();if(!e.repeat){const choice=state.inlineRegion?.choices[Number(e.target.dataset.regionChoice)];if(choice){$('#inline-region-value').value=choice.value;run(()=>acceptInlineRegion());}}return;}
  if(e.target.id==='inline-region-value'&&e.key==='Enter'){e.preventDefault();e.stopImmediatePropagation();if(!e.repeat)run(()=>acceptInlineRegion());return;}
- const choices=e.target.closest('.region-reading-choices');if(!choices||!/^[1-9]$/.test(e.key))return;e.preventDefault();e.stopImmediatePropagation();const p=state.inlineRegion?.choices[Number(e.key)-1];if(p)$('#inline-region-value').value=p.value;
+ const choices=e.target.closest('.region-reading-choices');if(!choices||!/^[1-9]$/.test(e.key))return;e.preventDefault();e.stopImmediatePropagation();const p=state.inlineRegion?.choices[Number(e.key)-1];if(p){$('#inline-region-value').value=p.value;$('#inline-region-value').focus();}
 },true);

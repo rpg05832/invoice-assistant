@@ -55,7 +55,7 @@ jobs:
         run: python scripts/build_installer.py
       - name: Test installed Windows window, updater and retained data
         if: runner.os == 'Windows'
-        run: python scripts/smoke_installer.py dist/InvoiceAssistant-Setup-0.2.1-x64.exe
+        run: python scripts/smoke_installer.py dist/InvoiceAssistant-Setup-0.2.2-x64.exe
       - name: Upload tested Windows installer
         if: success() && runner.os == 'Windows'
         uses: actions/upload-artifact@v4

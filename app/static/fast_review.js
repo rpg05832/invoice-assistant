@@ -65,7 +65,7 @@ async function reviewOperation(task){
  $('#review-operation-error')?.remove();state.reviewBusy=true;updateReviewControls();
  try{if(state.reviewSessionSaver)await state.reviewSessionSaver();await task();}
  catch(error){
-  let alert=$('#review-operation-error');if(!alert&&$('#review-workbench')){alert=document.createElement('div');alert.id='review-operation-error';alert.className='notice review-operation-error';alert.setAttribute('role','alert');$('#review-workbench').after(alert);}if(alert)alert.textContent='לא ניתן להשלים את הפעולה: '+error.message;
+  let alert=$('#review-operation-error');if(!alert&&$('#review-workbench')){alert=document.createElement('div');alert.id='review-operation-error';alert.className='notice review-operation-error';alert.setAttribute('role','alert');$('#review-workbench').after(alert);}if(alert){alert.textContent='לא ניתן להשלים את הפעולה: '+error.message;alert.insertAdjacentHTML('beforeend','<button type="button" data-action="review-discard-close">יציאה ללא שמירת התיקונים</button>');}
   const validation=$('#approval-validation');if(validation)validation.open=true;
   const issues=$('#review-issues');if(issues){issues.innerHTML='<div class="notice" role="alert"></div>';issues.firstChild.textContent=error.message;reviewIssueFocus();}
   toast(error.message,true);
@@ -83,6 +83,7 @@ async function moveReview(step,onlyPending=false){
 async function approveReviewNext(){
  await reviewOperation(async()=>{
   const id=state.current.id;if(!editableReview(state.current))return;
+  if(!$('#region-reading-draft')&&!confirmSingleDetectedCheck())return;
   if(state.current.status!=='approved'||reviewDirty())await saveDocument(true);
   // Supplier questions and validation errors must leave this invoice awaiting review.
   if(state.docs.find(d=>d.id===id)?.status!=='approved')return;
@@ -132,6 +133,7 @@ Object.assign(actions,{
  'review-approve-next':()=>approveReviewNext(),
  'review-focus-issue':()=>reviewIssueFocus(),
  'review-list':()=>reviewOperation(async()=>{if(reviewDirty())await saveDocument(false);closeModal();}),
+ 'review-discard-close':()=>{if(confirm('לצאת בלי לשמור את התיקונים שטרם נשמרו? הנתונים שכבר נשמרו נשארים כפי שהם, והחשבונית לא תאושר.')){closeModal();toast('חזרת לרשימה בלי לשמור את התיקונים האחרונים');}},
  'review-zoom-in':()=>applyReviewZoom((state.reviewZooms[state.current.id]||1)+.25),
  'review-zoom-out':()=>applyReviewZoom((state.reviewZooms[state.current.id]||1)-.25),
  'review-zoom-fit':()=>applyReviewZoom(1)

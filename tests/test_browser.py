@@ -719,6 +719,69 @@ def test_browser_main_navigation_secondary_dialogs_and_action_registry(browser_a
     Path('test-results/menu-audit.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
 
 
+def seed_detected_check(directory,document,conflict=False):
+    import json
+    import sqlite3
+    proposal={'number':'00007531','engine':'sequence-a','reason':'תיאור אוטומטי של דיו שנוסף לסריקה','source_document_id':document['id'],'region':{'x':.1,'y':.05,'w':.3,'h':.1,'rotation':0},'proposals':[{'engine':'sequence-a','number':'00007531'},{'engine':'sequence-b','number':'00007532' if conflict else '00007531'}]}
+    with sqlite3.connect(directory/'data/invoices.sqlite3') as connection:
+        meta=json.loads(connection.execute('SELECT value FROM document_meta WHERE document_id=?',(document['id'],)).fetchone()[0]);meta.update(suggested_checks=[proposal],check_candidates_reviewed=False)
+        connection.execute('UPDATE document_meta SET value=? WHERE document_id=?',(json.dumps(meta),document['id']))
+
+
+def test_browser_one_enter_accepts_single_detected_check_and_approves_next(browser_app):
+    page,url,directory=browser_app
+    company,path,docs=seed_fast_review(page,url,'אנטר לצ׳ק יחיד',count=2);first,second=docs
+    seed_detected_check(directory,first)
+    page.goto(url);expect(page.locator('#dropzone')).to_be_visible();page.locator('#company').select_option(company['id'])
+    page.get_by_role('button',name='בדיקה מהירה · 2 ממתינים',exact=True).click()
+    expect(page.locator('[data-auto-check]')).to_have_count(1)
+    page.keyboard.press('Enter')
+    expect(page.locator('#field-number')).to_have_value(second['fields']['number'])
+    saved=next(d for d in page.request.get(path+'/documents').json() if d['id']==first['id'])
+    assert saved['status']=='approved' and saved['check_candidates_reviewed']
+    assert len(saved['checks'])==1 and saved['checks'][0]['confirmed']
+    assert saved['checks'][0]['reason']=='corrected_value' and saved['checks'][0]['number']=='00007531'
+    assert saved['checks'][0]['detection_reason']=='תיאור אוטומטי של דיו שנוסף לסריקה'
+    page.keyboard.press('Escape');expect(page.locator('#modal')).not_to_be_visible()
+
+
+def test_browser_conflicting_check_requires_choice_then_enter_accepts_it(browser_app):
+    page,url,directory=browser_app
+    company,path,docs=seed_fast_review(page,url,'אנטר עם קריאות סותרות',count=1);doc=docs[0]
+    seed_detected_check(directory,doc,conflict=True)
+    page.goto(url);expect(page.locator('#dropzone')).to_be_visible();page.locator('#company').select_option(company['id'])
+    page.get_by_role('button',name='בדיקה מהירה · 1 ממתינים',exact=True).click();page.keyboard.press('Enter')
+    expect(page.locator('#inline-region-value')).to_be_visible()
+    assert page.request.get(path+'/documents').json()[0]['status']=='review'
+    page.locator('[data-region-choice="1"]').focus();page.keyboard.press('Enter')
+    expect(page.locator('#region-reading-draft')).to_have_count(0)
+    expect(page.locator('[data-check-number="0"]')).to_have_value('00007532')
+    expect(page.locator('[name="check_candidates_reviewed"]')).to_be_checked()
+    page.keyboard.press('Enter');expect(page.locator('#modal')).not_to_be_visible()
+    assert page.request.get(path+'/documents').json()[0]['status']=='approved'
+
+
+def test_browser_failed_save_allows_explicit_discard_exit_without_approval(browser_app):
+    page,url,directory=browser_app
+    company,path,docs=seed_fast_review(page,url,'יציאה לאחר כשל שמירה',count=2);first=docs[0]
+    page.goto(url);expect(page.locator('#dropzone')).to_be_visible();page.locator('#company').select_option(company['id'])
+    page.get_by_role('button',name='בדיקה מהירה · 2 ממתינים',exact=True).click()
+    page.locator('#field-notes').fill('תיקון שלא נשמר')
+    route=url+'/api/documents/'+first['id']
+    page.route(route,lambda request:request.fulfill(status=409,json={'detail':'כשל שמירה מבוקר לבדיקה'}))
+    try:
+        page.get_by_role('button',name='הבא ללא אישור ←',exact=True).click()
+        expect(page.locator('#review-operation-error')).to_contain_text('כשל שמירה')
+        discard=page.get_by_role('button',name='יציאה ללא שמירת התיקונים',exact=True)
+        page.once('dialog',lambda dialog:dialog.dismiss());discard.click()
+        expect(page.locator('#field-notes')).to_have_value('תיקון שלא נשמר')
+        page.once('dialog',lambda dialog:dialog.accept());discard.click()
+        expect(page.locator('#modal')).not_to_be_visible()
+        original=next(d for d in page.request.get(path+'/documents').json() if d['id']==first['id'])
+        assert original['status']=='review' and original['fields']['notes']==''
+    finally:page.unroute(route)
+
+
 @pytest.mark.parametrize('width,height',[(1280,690),(1366,768),(1600,900),(1920,1080)])
 def test_browser_approval_workspace_fits_page_and_core_fields(browser_app,width,height):
     page,url,directory=browser_app

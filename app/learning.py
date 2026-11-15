@@ -19,6 +19,15 @@ REASONS={'corrected_value':'תיקון הקריאה','extra_stroke':'קו או �
 RULE_FIELDS=('expense_account','vat_account','transaction_type','cost_center','project','purpose','currency')
 
 
+def normalize_check_proposal(proposal):
+    """Old detector descriptions are provenance, never a correction reason code."""
+    result=dict(proposal);reason=result.get('reason')
+    if not isinstance(reason,str) or reason not in REASONS:
+        if isinstance(reason,str) and reason and not result.get('detection_reason'):result['detection_reason']=reason
+        result['reason']='corrected_value'
+    return result
+
+
 def now():return datetime.now(timezone.utc).isoformat()
 def uid():return uuid.uuid4().hex
 def encode(value):return json.dumps(value,ensure_ascii=False)

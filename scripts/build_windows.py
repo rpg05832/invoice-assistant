@@ -22,7 +22,7 @@ def main():
     command[-1:-1]=['--collect-all','webview','--collect-all','pythonnet','--collect-all','clr_loader','--hidden-import','webview.platforms.winforms','--hidden-import','webview.platforms.edgechromium','--add-data',f'{ROOT / "build-info.json"};.','--add-data',f'{ROOT / "scripts/model-mirrors.json"};scripts','--add-data',f'{ROOT / "third_party"};third_party']
     import json
     from datetime import datetime,timezone
-    (ROOT/'build-info.json').write_text(json.dumps({'version':'0.2.1','commit':os.environ.get('GITHUB_SHA','development'),'built_at':datetime.now(timezone.utc).isoformat()}),encoding='utf-8')
+    (ROOT/'build-info.json').write_text(json.dumps({'version':'0.2.2','commit':os.environ.get('GITHUB_SHA','development'),'built_at':datetime.now(timezone.utc).isoformat()}),encoding='utf-8')
     subprocess.run(command,cwd=ROOT,check=True)
     for name in ('README.md','docs/VALIDATION.md','third_party/tesseract-models-LICENSE.txt','third_party/digit-model-LICENSE.txt','third_party/indra-model-LICENSE.txt','third_party/sequence-models-LICENSE.txt','docs/MODEL_RESEARCH.md','docs/PERSONAL_LEARNING.md','docs/FAST_REVIEW.md','docs/MODEL_DOWNLOADS.md','docs/DESKTOP_UPDATES.md','docs/DOCUMENT_STORAGE.md'):
         destination=ROOT/'dist/InvoiceAssistant'/name;destination.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(ROOT/name,destination)

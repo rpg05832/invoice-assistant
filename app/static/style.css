@@ -49,3 +49,4 @@ dialog.approval-workspace{position:fixed;inset:0;width:100vw;max-width:none;heig
 /* Blocking errors belong to the dialog's top layer and remain visible. */
 .approval-workspace .review-operation-error{flex:none;margin:4px 14px;padding:8px 12px;max-height:110px;overflow:auto;color:#8b3025;background:#fff1ed;border:1px solid #d79385;font-size:13px}
 .approval-workspace:has(#region-reading-draft) #review-field-loupe{display:none}
+.review-operation-error [data-action="review-discard-close"]{margin-inline-start:12px;padding:4px 8px;font-size:12px}

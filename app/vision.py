@@ -138,14 +138,17 @@ def suggested_checks(path,excluded=(),words=None,propose=None):
                 cropped=Path(temp)/'crop.png';image.crop((round(x*image.width),round(y*image.height),round((x+w)*image.width),round((y+h)*image.height))).save(cropped)
                 proposals=propose(cropped) if propose else [sequence_recognize(cropped,model) for model in ('paddle-v6-small','paddle-v5')]
             proposal=next((p for p in proposals if p.get('number') and p.get('available') is not False),{}) if propose else max((p for p in proposals if p.get('number')),key=lambda p:p.get('confidence',0),default={})
-            candidates.append({'number':proposal.get('number',''),'region':{k:region[k] for k in ('x','y','w','h','rotation')},'engine':proposal.get('engine','colored-ink'),'proposals':proposals,'confirmed':False,'reason':region['reason']})
+            candidates.append({'number':proposal.get('number',''),'region':{k:region[k] for k in ('x','y','w','h','rotation')},'engine':proposal.get('engine','colored-ink'),'proposals':proposals,'confirmed':False,'reason':'corrected_value','detection_reason':region['reason']})
     from .extraction import word_rows,role
     contexts={id(word):(text,row) for text,row in word_rows(words) for word in row}
     for word in words:
         text=word['text'].strip('.,:;#')
         if not text.isascii() or not text.isdigit() or not 4<=len(text)<=12 or text in excluded:continue
         context,row=contexts.get(id(word),('',[]))
-        labeled=bool(re.search(r'(?:^|\s)(?:שק|שיק|צ[׳\'״"]?ק|check|cheque)(?:\s|:)',context,re.I))
+        # "שק" alone also means a bag in a product row. Only its explicit
+        # number label is cheque evidence; decimal prices never become IDs.
+        labeled=bool(re.search(r'(?:^|\s)(?:שיק|צ[׳\'״"]?ק|check|cheque)(?:\s|:)|(?:^|\s)שק\s+(?:מספר|מס[׳\'״".]?)(?:\s|:)|(?:^|\s)שק\s*[:#]|(?:^|\s)(?:מספר|מס[׳\'״".]?)\s+שק(?:\s|:)',context,re.I))
+        if role(context)[0] is not None:continue
         isolated=word['y']>.55 and word.get('confidence',1)<.7 and len(row)<=2 and role(context)[0] is None
         if not (labeled or isolated):continue
         center=(word['x']+word['w']/2,word['y']+word['h']/2)
@@ -155,7 +158,7 @@ def suggested_checks(path,excluded=(),words=None,propose=None):
         # Expand enough to retain handwritten ascenders and nearby leading zeros.
         x=max(0,region['x']-.008);y=max(0,region['y']-.008)
         region.update(x=x,y=y,w=min(1-x,region['w']+.016),h=min(1-y,region['h']+.016))
-        candidates.append({'number':text,'region':region,'engine':'tesseract','confirmed':False,'reason':'רצף ספרות בעמוד המקורי. ייתכן שהוא אסמכתא אחרת; נדרש שיוך ידני.'})
+        candidates.append({'number':text,'region':region,'engine':'tesseract','confirmed':False,'reason':'corrected_value','detection_reason':'רצף ספרות בעמוד המקורי. ייתכן שהוא אסמכתא אחרת; נדרש שיוך ידני.'})
     return candidates[:50]
 
 

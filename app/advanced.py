@@ -87,6 +87,8 @@ def enrich(c,d):
     d['amount_review_reason']=amount_review_reason(d['fields'],d['ocr_text'])
     d['amount_reviewed']=value.get('amount_review_values')=={k:d['fields'].get(k,'') for k in ('net','vat','total')}
     d.update({key:value.get(key,default) for key,default in [('items',[]),('field_sources',{}),('field_engines',{}),('payment',None),('processing',{}),('suggested_checks',[]),('check_candidates_reviewed',False)]})
+    from .learning import normalize_check_proposal
+    d['suggested_checks']=[normalize_check_proposal(p) for p in d['suggested_checks']]
     ids=[d['id']]+[r[0] for r in c.execute('SELECT child_id FROM document_links WHERE primary_id=?',(d['id'],))]
     d['pages']=[dict(r) for i in ids for r in c.execute('SELECT id,source_id,page,region,engine FROM documents WHERE id=?',(i,))]
     d['supplier_suggestions']=[]
@@ -396,17 +398,23 @@ def register(app,s):
     @app.post('/api/documents/{doc_id}/check-suggestions')
     def check_suggestions(doc_id:str):
         from .vision import suggested_checks
+        from .learning import normalize_check_proposal
         with db() as c:
             d=document(c,doc_id);editable(d)
             source=data/'files'/d['source_id']/f"page-{d['page']}.png"
             fields=d['fields'];excluded=[fields.get(key,'') for key in ('supplier_tax_id','recipient_tax_id','number','allocation')]
             results=suggested_checks(source,excluded,propose=lambda path:app.state.check_proposals(c,d,path)['proposals'])
             for result in results:result['source_document_id']=doc_id
+            previous=[normalize_check_proposal(p) for p in meta(c,doc_id).get('suggested_checks',[])]
+            changed=previous!=results
+            if changed:
+                save_meta(c,doc_id,{'suggested_checks':results,'check_candidates_reviewed':False})
+                c.execute('UPDATE documents SET revision=revision+1 WHERE id=?',(doc_id,))
             related=[]
             for row in c.execute("SELECT id,checks FROM documents WHERE company_id=? AND id<>? AND status<>'archived'",(d['company_id'],doc_id)):
                 for check in json.loads(row['checks']):
                     if check['number'] in {r['number'] for r in results}:related.append({'document_id':row['id'],'number':check['number']})
-            return {'candidates':results,'related':related,'requires_assignment':True}
+            return {'candidates':results,'related':related,'requires_assignment':True,'revision':d['revision']+int(changed),'changed':changed}
 
     @app.post('/api/documents/{doc_id}/recognize-indra')
     def recognize_indra(doc_id:str,payload:dict=Body(...)):

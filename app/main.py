@@ -397,9 +397,12 @@ def create_app(data_dir=None):
                 if region is not None: validate_region(region)
                 origin = advanced.source_document(c,d,check.get('source_document_id'))
                 learning.check_writer(c,d['company_id'],check.get('writer_id'))
-                if check.get('reason','corrected_value') not in learning.REASONS:fail('סיבת תיקון צ׳ק לא תקינה')
+                if not isinstance(check.get('reason','corrected_value'),str) or check.get('reason','corrected_value') not in learning.REASONS:fail('בחרו סיבת תיקון לצ׳ק מתוך הרשימה')
+                detection_reason=check.get('detection_reason','')
+                if not isinstance(detection_reason,str) or len(detection_reason)>2000:fail('תיאור זיהוי הצ׳ק לא תקין')
                 clean_checks.append({'number': number.strip(), 'confirmed': check.get('confirmed') is True, 'region': region, 'engine': str(check.get('engine', 'manual'))[:100], 'source_document_id':origin['id'], 'source_id': origin['source_id'], 'page': origin['page'], 'proposals':check.get('proposals',[])[:30] if isinstance(check.get('proposals',[]),list) else []})
                 clean_checks[-1].update(writer_id=check.get('writer_id') or None,reason=check.get('reason',learning.feedback(payload)['reason']),explanation=str(check.get('explanation',learning.feedback(payload)['explanation']))[:2000])
+                if detection_reason:clean_checks[-1]['detection_reason']=detection_reason
             c.execute("UPDATE documents SET fields=?,supplier_id=?,checks=?,status='review',revision=revision+1 WHERE id=?", (encode(f), supplier_id, encode(clean_checks), doc_id))
             if payload.get('remember') and supplier_id and f.get('supplier_name'):
                 c.execute('INSERT INTO aliases VALUES(?,?,?) ON CONFLICT(company_id,alias) DO UPDATE SET supplier_id=excluded.supplier_id', (d['company_id'], f['supplier_name'].casefold(), supplier_id))
