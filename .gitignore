@@ -6,4 +6,9 @@ __pycache__/
 .env
 test-results/
 node_modules/
+
 dist/
+build/
+*.spec
+
+/build-info.json
