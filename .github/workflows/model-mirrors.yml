@@ -1,0 +1,56 @@
+name: Publish verified public model mirrors
+on:
+  push:
+    branches: [work/full-spec]
+    paths:
+      - '.github/workflows/model-mirrors.yml'
+      - 'scripts/publish_model_mirrors.py'
+      - 'scripts/model_catalog.py'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: public-model-mirrors
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: python scripts/publish_model_mirrors.py --prepare
+        env: {GITHUB_TOKEN: '${{ github.token }}'}
+  mirror:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        profile: [base, best, rivok, indra, digits, multilingual, glm-ocr, qwen35-08, paddle-vl16, lighton, runtimes]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: python scripts/publish_model_mirrors.py --profile '${{ matrix.profile }}'
+        env: {GITHUB_TOKEN: '${{ github.token }}'}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: model-index-${{ matrix.profile }}
+          path: test-results/model-index-${{ matrix.profile }}.json
+  finalize:
+    needs: mirror
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: model-index-*
+          path: test-results
+          merge-multiple: true
+      - run: python scripts/publish_model_mirrors.py --finalize
+        env: {GITHUB_TOKEN: '${{ github.token }}'}
