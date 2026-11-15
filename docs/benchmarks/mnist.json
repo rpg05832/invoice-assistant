@@ -1,0 +1,12 @@
+{
+  "dataset": "MNIST official 10,000 test glyphs",
+  "glyphs": 10000,
+  "correct_glyphs": 9890,
+  "glyph_accuracy": 0.989,
+  "seven_glyph_groups": 1428,
+  "seven_glyph_group_accuracy": 0.9257703081232493,
+  "confidence_filtered_group_coverage": 0.696078431372549,
+  "confidence_filtered_group_accuracy": 0.9909456740442656,
+  "seconds": 0.47,
+  "limitations": "Isolated MNIST glyphs. Does not test segmentation, touching digits, photographed checks or user documents."
+}

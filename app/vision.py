@@ -1,0 +1,228 @@
+"""Local geometry, OCR provenance and independent handwritten digit proposals."""
+import csv
+import io
+import math
+import os
+import subprocess
+import re
+from pathlib import Path
+
+import cv2
+import numpy as np
+from PIL import Image, ImageOps
+from fastapi import HTTPException
+from . import ocr
+from .paths import assets
+
+
+def preprocess(source, destination, transform=None):
+    with Image.open(source) as image:
+        image = ImageOps.exif_transpose(image).convert('RGB')
+        quarter=transform['quarter_rotation'] if transform is not None else ocr.orientation(source)
+        if quarter:image=image.rotate(-quarter,expand=True,fillcolor='white')
+        array = np.array(image)
+    if transform is not None:angle=transform['deskew_degrees']
+    else:
+        gray = cv2.cvtColor(array, cv2.COLOR_RGB2GRAY)
+        small = cv2.resize(gray, None, fx=min(1,1600/gray.shape[1]), fy=min(1,1600/gray.shape[1]))
+        edges = cv2.Canny(small, 60, 180)
+        lines = cv2.HoughLinesP(edges, 1, np.pi/1800, threshold=80, minLineLength=max(50,small.shape[1]//8), maxLineGap=20)
+        angles=[]
+        if lines is not None:
+            for x1,y1,x2,y2 in lines[:,0]:
+                angle=math.degrees(math.atan2(y2-y1,x2-x1))
+                if abs(angle)<12: angles.append(angle)
+        angle=float(np.median(angles)) if len(angles)>=3 else 0
+    corrected=image.rotate(angle,expand=True,fillcolor='white',resample=Image.Resampling.BICUBIC) if abs(angle)>.2 else image
+    corrected=ImageOps.autocontrast(corrected.convert('RGB'))
+    corrected.save(destination,'PNG')
+    return {'quarter_rotation':quarter,'deskew_degrees':angle,'contrast':'autocontrast'}
+
+
+def tokens(path,quality='fast',psm=3):
+    cap=ocr.capabilities(quality)
+    if not cap['available']: return []
+    langs='heb_rivok' if 'heb_rivok' in cap['languages'] else '+'.join(l for l in ('heb','eng') if l in cap['languages'])
+    if not langs: return []
+    try:
+        # Bundled tessdata contains weights, not Tesseract's external config files.
+        # Request TSV explicitly; a missing "tsv" config otherwise returns plain
+        # text with exit code zero and silently loses every source coordinate.
+        result=ocr.run_tesseract([Path(path),'stdout','-l',langs,'--psm',str(psm),'-c','tessedit_create_tsv=1','-c','tessedit_create_txt=0'],quality,timeout=60)
+        if result.returncode:return []
+        with Image.open(path) as image:w,h=image.size
+        output=[]
+        for row in csv.DictReader(io.StringIO(result.stdout),delimiter='\t',quoting=csv.QUOTE_NONE):
+            if row['level']!='5' or not row.get('text','').strip():continue
+            output.append({'text':row['text'],'confidence':float(row['conf'])/100,'x':int(row['left'])/w,'y':int(row['top'])/h,'w':int(row['width'])/w,'h':int(row['height'])/h,'rotation':0,'line':f"{row['block_num']}:{row['par_num']}:{row['line_num']}"})
+        return output
+    except (OSError,ValueError,KeyError,subprocess.TimeoutExpired):return []
+
+
+def pdf_tokens(page):
+    return [{'text':word[4],'confidence':1,'x':word[0]/page.rect.width,'y':word[1]/page.rect.height,'w':(word[2]-word[0])/page.rect.width,'h':(word[3]-word[1])/page.rect.height,'rotation':0,'line':f'{word[5]}:{word[6]}'} for word in page.get_text('words')]
+
+
+def field_sources(fields, words):
+    output={}
+    for field,value in fields.items():
+        if not value or field in ('kind','currency','purpose'):continue
+        normalized=str(value).replace(',','').replace('-','').replace('/','').replace('.','')
+        for word in words:
+            candidate=word['text'].replace(',','').replace('-','').replace('/','').replace('.','').strip(':₪')
+            if normalized==candidate or (len(normalized)>=4 and normalized in candidate):
+                output[field]={k:word[k] for k in ('x','y','w','h','rotation')};break
+    return output
+
+
+def suggest_regions(path):
+    """Propose disconnected document blocks; ambiguous pages still require review."""
+    with Image.open(path) as image:
+        image=ImageOps.grayscale(image);image.thumbnail((1200,1200));arr=np.array(image)
+    ink=(arr<210).astype(np.uint8)
+    # Join characters/lines into document areas, retaining large paper gutters.
+    kernel=cv2.getStructuringElement(cv2.MORPH_RECT,(max(9,arr.shape[1]//35),max(9,arr.shape[0]//30)))
+    connected=cv2.dilate(ink,kernel)
+    n,_,stats,_=cv2.connectedComponentsWithStats(connected,8)
+    regions=[];height,width=arr.shape
+    for x,y,w,h,area in stats[1:]:
+        if w<width*.12 or h<height*.07 or area<width*height*.008:continue
+        pad=.015
+        left=max(0,x/width-pad);top=max(0,y/height-pad)
+        right=min(1,(x+w)/width+pad);bottom=min(1,(y+h)/height+pad)
+        regions.append({'x':left,'y':top,'w':right-left,'h':bottom-top,'rotation':0})
+    regions.sort(key=lambda r:(round(r['y']*8),r['x']))
+    return {'regions':regions[:20] if len(regions)>1 else [],'requires_review':True,'warning':'המסגרות הן הצעה. בדקו גבולות, חפיפה וסיבוב מול המקור לפני אישור.'}
+
+
+def digit_proposal(path):
+    """Segment a numeral sequence and run a pinned MNIST ONNX classifier on CPU.
+
+    Confidence is per glyph, not a guarantee for a complete check number.
+    """
+    model=Path(os.environ.get('INVOICE_DIGIT_MODEL',assets()/'models/mnist-12.onnx'))
+    if not model.is_file():return {'engine':'mnist-onnx','available':False,'number':'','warning':'מודל הספרות לא מותקן'}
+    import onnxruntime as ort
+    with Image.open(path) as image:gray=np.array(ImageOps.grayscale(image))
+    if gray.size>40_000_000:raise ValueError('Image too large')
+    binary=cv2.threshold(gray,0,255,cv2.THRESH_BINARY_INV|cv2.THRESH_OTSU)[1]
+    # Suppress long scanner ruling and isolated specks, preserving handwritten strokes.
+    n,labels,stats,_=cv2.connectedComponentsWithStats(binary,8)
+    candidates=[(x,y,w,h,a) for x,y,w,h,a in stats[1:] if a>=max(5,binary.size*.00004) and h>=binary.shape[0]*.15 and w<binary.shape[1]*.9]
+    candidates.sort()
+    if not candidates:return {'engine':'mnist-onnx','available':True,'number':'','confidence':0,'warning':'לא נמצאו ספרות מופרדות; אפשר להקליד או לסמן אזור מצומצם'}
+    options=ort.SessionOptions();options.intra_op_num_threads=2;options.inter_op_num_threads=1
+    session=ort.InferenceSession(str(model),sess_options=options,providers=['CPUExecutionProvider'])
+    digits=[];confidence=[];boxes=[]
+    for x,y,w,h,area in candidates[:30]:
+        glyph=binary[y:y+h,x:x+w]
+        scale=20/max(w,h);resized=cv2.resize(glyph,(max(1,round(w*scale)),max(1,round(h*scale))))
+        canvas=np.zeros((28,28),np.float32);rh,rw=resized.shape
+        canvas[(28-rh)//2:(28-rh)//2+rh,(28-rw)//2:(28-rw)//2+rw]=resized/255
+        value=canvas.reshape(1,1,28,28)
+        score=session.run(None,{session.get_inputs()[0].name:value})[0].reshape(-1)
+        probability=np.exp(score-score.max());probability/=probability.sum()
+        digits.append(str(int(score.argmax())));confidence.append(float(probability.max()))
+        boxes.append({'x':int(x),'y':int(y),'w':int(w),'h':int(h)})
+    return {'engine':'mnist-onnx','available':True,'number':''.join(digits),'confidence':min(confidence),'glyph_confidences':confidence,'boxes':boxes,'confirmed':False,'warning':'מודל ספרות בודדות עם הפרדת תווים. ספרות נוגעות או חופפות מחייבות תיקון; יש לאשר רצף מלא מול המקור.'}
+
+
+def suggested_checks(path,excluded=(),words=None,propose=None):
+    words=tokens(path) if words is None else words
+    candidates=[]
+    regions=colored_digit_regions(path)
+    import tempfile
+    from .sequence_digits import recognize as sequence_recognize
+    with Image.open(path) as image:
+        for region in regions:
+            x,y,w,h=[region[k] for k in ('x','y','w','h')]
+            with tempfile.TemporaryDirectory() as temp:
+                cropped=Path(temp)/'crop.png';image.crop((round(x*image.width),round(y*image.height),round((x+w)*image.width),round((y+h)*image.height))).save(cropped)
+                proposals=propose(cropped) if propose else [sequence_recognize(cropped,model) for model in ('paddle-v6-small','paddle-v5')]
+            proposal=next((p for p in proposals if p.get('number') and p.get('available') is not False),{}) if propose else max((p for p in proposals if p.get('number')),key=lambda p:p.get('confidence',0),default={})
+            candidates.append({'number':proposal.get('number',''),'region':{k:region[k] for k in ('x','y','w','h','rotation')},'engine':proposal.get('engine','colored-ink'),'proposals':proposals,'confirmed':False,'reason':'corrected_value','detection_reason':region['reason']})
+    from .extraction import word_rows,role
+    contexts={id(word):(text,row) for text,row in word_rows(words) for word in row}
+    for word in words:
+        text=word['text'].strip('.,:;#')
+        if not text.isascii() or not text.isdigit() or not 4<=len(text)<=12 or text in excluded:continue
+        context,row=contexts.get(id(word),('',[]))
+        # "שק" alone also means a bag in a product row. Only its explicit
+        # number label is cheque evidence; decimal prices never become IDs.
+        labeled=bool(re.search(r'(?:^|\s)(?:שיק|צ[׳\'״"]?ק|check|cheque)(?:\s|:)|(?:^|\s)שק\s+(?:מספר|מס[׳\'״".]?)(?:\s|:)|(?:^|\s)שק\s*[:#]|(?:^|\s)(?:מספר|מס[׳\'״".]?)\s+שק(?:\s|:)',context,re.I))
+        if role(context)[0] is not None:continue
+        isolated=word['y']>.55 and word.get('confidence',1)<.7 and len(row)<=2 and role(context)[0] is None
+        if not (labeled or isolated):continue
+        center=(word['x']+word['w']/2,word['y']+word['h']/2)
+        if any(p['region']['x']<=center[0]<=p['region']['x']+p['region']['w'] and p['region']['y']<=center[1]<=p['region']['y']+p['region']['h'] for p in candidates):continue
+        if any(p['number']==text and abs(p['region']['y']-word['y'])<.02 for p in candidates):continue
+        region={k:word[k] for k in ('x','y','w','h','rotation')}
+        # Expand enough to retain handwritten ascenders and nearby leading zeros.
+        x=max(0,region['x']-.008);y=max(0,region['y']-.008)
+        region.update(x=x,y=y,w=min(1-x,region['w']+.016),h=min(1-y,region['h']+.016))
+        candidates.append({'number':text,'region':region,'engine':'tesseract','confirmed':False,'reason':'corrected_value','detection_reason':'רצף ספרות בעמוד המקורי. ייתכן שהוא אסמכתא אחרת; נדרש שיוך ידני.'})
+    return candidates[:50]
+
+
+def indra_recognize(path):
+    model_dir=assets()/'models/indra'
+    if not (model_dir/'rec_rtl.onnx').is_file():return {'available':False,'engine':'indra-rtl','text':'','warning':'מודל Indra RTL אינו מותקן'}
+    try:
+        import indra_ocr
+        conv=indra_ocr.load(path=str(model_dir),threads=2,mode='ocr')
+        # Converter.convert uses cv2.imread, whose Windows paths are not Unicode
+        # safe. The application already supplies an individual normalized page.
+        with Image.open(path) as image:gray=np.ascontiguousarray(np.asarray(image.convert('L')))
+        page=conv.ocr(gray);text=page.text.strip()
+        if not text:return {'available':False,'engine':'indra-rtl','text':'','warning':'Indra לא החזיר טקסט מהעמוד. נסו סריקה חוזרת או סימון אזור לקריאה.'}
+        return {'available':True,'engine':'indra-rtl','text':text,'warning':'Indra כפוף לרישיון המודל OpenRAIL-M; בדקו התאמה לשימוש המסחרי שלכם'}
+    except (ImportError,OSError,RuntimeError,ValueError) as exc:return {'available':False,'engine':'indra-rtl','text':'','warning':'לא ניתן להפעיל את Indra. בדקו את התקנת המודל במסך זיהוי וחיבורים. פרטי התקלה: '+type(exc).__name__}
+
+
+def pdf_items(page):
+    aliases={'description':['description','תיאור','פריט'],'quantity':['quantity','qty','כמות'],'price':['price','מחיר','מחיר יחידה'],'discount':['discount','הנחה'],'total':['total','סכום','סהכ','סה״כ'],'item_code':['code','מק״ט','מקט']}
+    try:tables=page.find_tables().tables
+    except (ValueError,RuntimeError):return []
+    from .advanced import validate_items
+    output=[]
+    for table in tables:
+        rows=table.extract()
+        if len(rows)<2:continue
+        mapping={}
+        for i,header in enumerate(rows[0]):
+            title=(header or '').strip().casefold()
+            for key,names in aliases.items():
+                if title in names:mapping[key]=i
+        if not {'description','quantity','price','total'}<=set(mapping):continue
+        for row in rows[1:]:
+            value={key:str(row[index] or '').replace(',','').strip() for key,index in mapping.items() if index<len(row)}
+            value.setdefault('discount','0')
+            try:output.extend(validate_items([value]))
+            except HTTPException:continue
+    return output
+
+
+def colored_digit_regions(path):
+    """Locate blue/purple annotations while retaining original-page coordinates."""
+    with Image.open(path) as image:rgb=np.array(image.convert('RGB'))
+    scale=min(1,1600/rgb.shape[1]);rgb=cv2.resize(rgb,None,fx=scale,fy=scale)
+    hsv=cv2.cvtColor(rgb,cv2.COLOR_RGB2HSV)
+    mask=cv2.inRange(hsv,np.array([85,35,35]),np.array([175,255,250]))
+    n,_,stats,_=cv2.connectedComponentsWithStats(mask,8)
+    height,width=mask.shape
+    parts=[tuple(map(int,(x,y,w,h,area))) for x,y,w,h,area in stats[1:] if area>=5 and h>=3 and area<width*height*.05]
+    groups=[]
+    for x,y,w,h,area in sorted(parts,key=lambda p:p[0]):
+        joined=False
+        for group in groups:
+            gx,gy,gw,gh=group
+            overlap=min(y+h,gy+gh)-max(y,gy)
+            if overlap>min(h,gh)*.2 and x-(gx+gw)<max(h,gh)*1.2 and gx-(x+w)<max(h,gh)*1.2:
+                right=max(gx+gw,x+w);bottom=max(gy+gh,y+h);group[:]=[min(gx,x),min(gy,y),right-min(gx,x),bottom-min(gy,y)];joined=True;break
+        if not joined:groups.append([x,y,w,h])
+    results=[]
+    for x,y,w,h in groups:
+        if w<width*.045 or h<height*.008 or w/h<1.2 or h>height*.15:continue
+        pad=max(5,round(h*.18));left=max(0,x-pad);top=max(0,y-pad);right=min(width,x+w+pad);bottom=min(height,y+h+pad)
+        results.append({'x':left/width,'y':top/height,'w':(right-left)/width,'h':(bottom-top)/height,'rotation':0,'reason':'דיו כחול או סגול שנוסף לסריקה; נדרש לוודא שמדובר במספר צ׳ק'})
+    return sorted(results,key=lambda r:(r['y'],r['x']))[:30]
