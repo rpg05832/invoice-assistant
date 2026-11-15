@@ -20,7 +20,7 @@ def main():
     if os.name!='nt':raise SystemExit('Run the native-window acceptance test on Windows')
     executable=Path(args.executable).resolve();binary=executable.read_bytes();pe=struct.unpack_from('<I',binary,0x3c)[0]
     assert struct.unpack_from('<H',binary,pe+92)[0]==2,'Packaged executable still uses the console subsystem'
-    with tempfile.TemporaryDirectory(prefix='desktop-') as temp:
+    with tempfile.TemporaryDirectory(prefix='desktop-',ignore_cleanup_errors=True) as temp:
         root=Path(temp);profile=root/'משתמש עברי';state=root/'desktop.json'
         env={k:v for k,v in os.environ.items() if k not in ('INVOICE_DATA_DIR','INVOICE_ASSET_DIR','TESSDATA_PREFIX','INVOICE_TESSDATA_DIR')};env.update(LOCALAPPDATA=str(profile),INVOICE_DESKTOP_STATUS=str(state),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS='--disable-gpu')
         helper=None

@@ -28,6 +28,29 @@ def native_error(message):
     if os.name=='nt':ctypes.windll.user32.MessageBoxW(None,message,'חשבונית',0x10)
     else:logging.error(message)
 
+def close_guard(window,app):
+    """Do not block WinForms' closing event while WebView executes JavaScript."""
+    lock=threading.Lock();state={'checking':False,'allowed':False}
+    def check():
+        try:
+            try:dirty=window.evaluate_js("typeof invoicePendingChanges==='function' && invoicePendingChanges()")
+            except Exception:
+                logging.exception('Could not inspect pending review changes')
+                dirty=True
+            allowed=not dirty or window.create_confirmation_dialog('תיקונים שלא נשמרו','יש תיקונים שלא נשמרו. לסגור בלי לשמור אותם?')
+            with lock:state['allowed']=bool(allowed)
+            if allowed:window.destroy()
+        finally:
+            with lock:state['checking']=False
+    def closing():
+        with lock:
+            if state['allowed'] or getattr(app.state,'update_closing',False):return True
+            if not state['checking']:
+                state['checking']=True
+                threading.Thread(target=check,daemon=True,name='invoice-close-check').start()
+        return False
+    return closing
+
 @contextmanager
 def instance_lock(directory):
     """Acquire before creating the app/DB so a second launch cannot recover jobs."""
@@ -66,13 +89,7 @@ def launch(app,port=8765):
         else:raise RuntimeError('פתיחת התוכנה לא הושלמה בזמן')
         window=webview.create_window(TITLE,f'http://127.0.0.1:{port}',width=1440,height=960,min_size=(1060,650),maximized=True,text_select=True)
         app.state.desktop_close=lambda:window.destroy()
-        def closing():
-            if getattr(app.state,'update_closing',False):return True
-            try:dirty=window.evaluate_js("typeof invoicePendingChanges==='function' && invoicePendingChanges()")
-            except Exception:dirty=False
-            if dirty:return window.create_confirmation_dialog('תיקונים שלא נשמרו','יש תיקונים שלא נשמרו. לסגור בלי לשמור אותם?')
-            return True
-        window.events.closing+=closing
+        window.events.closing+=close_guard(window,app)
         window.events.loaded+=lambda:status('ready')
         window.events.closed+=lambda:setattr(server,'should_exit',True)
         webview.settings['OPEN_EXTERNAL_LINKS_IN_BROWSER']=True
