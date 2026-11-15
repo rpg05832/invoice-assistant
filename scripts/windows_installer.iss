@@ -5,7 +5,7 @@
 [Setup]
 AppId=InvoiceAssistant.Local
 AppName=Invoice Assistant
-AppVersion=0.2.0
+AppVersion=0.2.1
 AppPublisher=Invoice Assistant
 AppPublisherURL=https://github.com/rpg05832/invoice-assistant
 DefaultDirName={localappdata}\Programs\InvoiceAssistant
@@ -15,7 +15,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 OutputDir={#ProjectRoot}\dist
-OutputBaseFilename=InvoiceAssistant-Setup-0.2.0-x64
+OutputBaseFilename=InvoiceAssistant-Setup-0.2.1-x64
 Compression=lzma2/fast
 SolidCompression=yes
 WizardStyle=modern

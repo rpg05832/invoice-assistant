@@ -26,7 +26,7 @@ review=function(id){
  essentials.append(supplier,invoice,money,checks);
  const more=document.createElement('details');more.id='approval-more';more.innerHTML='<summary>פרטים נוספים, שורות פריטים ולמידה</summary><div></div>';
  const rest=$('div',more);while(fieldset.firstChild)rest.append(fieldset.firstChild);fieldset.append(essentials,more);
- const actionsBar=$('.review-advanced-actions');if(actionsBar){const tools=document.createElement('details');tools.id='approval-extra-actions';tools.innerHTML='<summary>כלי מסמך נוספים</summary>';actionsBar.before(tools);tools.append(actionsBar);const local=$('[data-action="local-document-reread"]',actionsBar);if(local)tools.before(local);}
+ const actionsBar=$('.review-advanced-actions');if(actionsBar){const tools=document.createElement('details');tools.id='approval-extra-actions';tools.innerHTML='<summary>כלי מסמך נוספים</summary>';actionsBar.before(tools);tools.append(actionsBar);const local=$('[data-action="local-document-reread"]',actionsBar);if(local){local.textContent='סריקה חוזרת למסמך';local.type='button';$('.review-queue-actions').append(local);}}
  const issues=$('#review-issues');if(issues){const details=document.createElement('details');details.id='approval-validation';details.innerHTML=`<summary>${state.current.issues.length?state.current.issues.length+' נושאים לבדיקה · F8 למעבר':'שדות החובה תקינים · בדקו מול המקור'}</summary>`;issues.before(details);details.append(issues);supplier.prepend(details);}
  // Keep all secondary controls reachable, while the ordinary approval surface is flat.
  const tabs=$('.review-tabs');if(tabs)editor.prepend(tabs);
@@ -36,9 +36,13 @@ review=function(id){
  state.reviewBaseline=reviewSignature();
 };
 const approvalZoomBefore=applyReviewZoom;applyReviewZoom=function(zoom){approvalZoomBefore(zoom);fitApprovalPage();};
+const approvalCheckSourceBefore=showCheckSource;showCheckSource=function(region,sourceId){approvalCheckSourceBefore(region,sourceId);if($('#modal').classList.contains('approval-workspace')){$$('#region-actions .check-preview').forEach(el=>el.remove());drawFieldLoupe(region,'מספר הצ׳ק · הגדלת מקור');}};
 const approvalPreferencesBefore=applyWorkspacePreferences;applyWorkspacePreferences=function(){approvalPreferencesBefore();if($('#approval-essentials')){const personal=$('#personal-review-fields');if(personal&&!personal.contains($('#approval-essentials'))){for(const card of $$('.approval-card')){const grid=$('.approval-fields',card);for(const child of Array.from(personal.children)){const keys=$$('input,select,textarea',child).map(el=>el.name);if(keys.some(k=>({הספק:['supplier_name','supplier_tax_id','supplier_id'], 'פרטי החשבונית':['kind','number','date','due_date','recipient_tax_id','allocation'],סכומים:['net','vat','total','currency','expense_account','notes']})[$('h3',card).textContent]?.includes(k)))grid.append(child);}}personal.remove();const wrapper=document.createElement('div');wrapper.id='personal-review-fields';$('#approval-essentials').before(wrapper);wrapper.append($('#approval-essentials'));}fitApprovalPage();}};
 const approvalIssueBefore=reviewIssueFocus;reviewIssueFocus=function(){const issues=(state.current?.issues||[]).join(' ');if(/כרטיס הוצאה|כרטיס מע״מ|סוג תנועה|פרויקט|מרכז עלות/.test(issues)&&$('#approval-more'))$('#approval-more').open=true;approvalIssueBefore();};
 const approvalCloseBefore=closeModal;closeModal=function(){state.approvalObserver?.disconnect();approvalCloseBefore();$('#modal').classList.remove('approval-workspace');};
 const approvalModalBefore=openModal;openModal=function(...args){$('#modal').classList.remove('approval-workspace');approvalModalBefore(...args);};
 function invoicePendingChanges(){return Boolean($('#review-form')&&(reviewDirty()||$('#region-reading-draft')));}
 window.addEventListener('resize',fitApprovalPage);
+for(const name of ['document-learning-history','evaluate-document','prepare-payment']){
+ const before=actions[name];actions[name]=async()=>{if($('#region-reading-draft'))throw Error('אשרו או דחו תחילה את הצעת הפענוח הפתוחה');if(reviewDirty())await saveDocument(false);return before();};
+}

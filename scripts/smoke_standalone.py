@@ -54,6 +54,14 @@ def exercise(command,directory,port,source=False,incoming=None):
                 if download['state']!='running':break
                 time.sleep(.25)
             assert download['state']=='completed',download
+            # This is a synthetic, research-only validation of the optional RTL
+            # engine. Its model files stay in this isolated test user profile.
+            installed=client.post('/api/local-models/indra/install',json={'license_accepted':True});assert installed.is_success,installed.text
+            for _ in range(360):
+                download=client.get('/api/local-models').json()['job']
+                if download['state']!='running':break
+                time.sleep(.25)
+            assert download['state']=='completed',download
         if incoming:
             preview=client.post(prefix+'/transfer/preview',files={'file':('team-learning.zip',incoming,'application/zip')});assert preview.is_success,preview.text
             result=client.post(prefix+'/transfer/import',json={'token':preview.json()['token'],'confirmed':True,'approve_examples':True,'categories':{'examples':True,'models':True},'supplier_mapping':{},'writer_mapping':{}});assert result.is_success,result.text
@@ -72,6 +80,16 @@ def exercise(command,directory,port,source=False,incoming=None):
             assert client.get(f"/api/companies/{company['id']}/documents").json()[0]['revision']==doc['revision']
             reply=client.patch('/api/documents/'+ident,json={'revision':doc['revision'],'checks':[{'number':'00002468','confirmed':True,'region':{'x':0,'y':0,'w':1,'h':1,'rotation':0}}]});assert reply.is_success,reply.text
             assert client.put('/api/documents/'+ident+'/review-flag',json={'marked':True,'note':'Synthetic review marker'}).is_success
+            hebrew_font=Path(os.environ.get('WINDIR','C:/Windows'))/'Fonts/arial.ttf'
+            if not hebrew_font.is_file():hebrew_font=Path('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf')
+            font=ImageFont.truetype(str(hebrew_font),64,layout_engine=ImageFont.Layout.BASIC)
+            hebrew=Image.new('RGB',(1400,800),'white');draw=ImageDraw.Draw(hebrew)
+            draw.text((600,80),'חשבונית מס'[::-1],font=font,fill='black');draw.text((600,200),'ספק בדיקה'[::-1],font=font,fill='black');draw.text((600,400),'00001234',font=font,fill='black')
+            buffer=io.BytesIO();hebrew.save(buffer,'PNG')
+            hebrew_upload=client.post(f"/api/companies/{company['id']}/upload",files={'file':('עברית.png',buffer.getvalue(),'image/png')});assert hebrew_upload.is_success,hebrew_upload.text
+            hebrew_id=hebrew_upload.json()['ids'][0]
+            indra=client.post('/api/documents/'+hebrew_id+'/recognize-indra',json={'license_accepted':True});assert indra.is_success,indra.text
+            assert 'חשבונית' in indra.json()['text'],indra.json()['text']
         job=client.post(prefix+'/train',json={'epochs':1,'auto_activate':False});assert job.is_success,job.text
         for _ in range(180):
             state=client.get(prefix).json();record=next(j for j in state['jobs'] if j['id']==job.json()['id'])
@@ -80,6 +98,17 @@ def exercise(command,directory,port,source=False,incoming=None):
         assert record['state']=='completed',record
         assert state['models'][0]['report']['bytes']>0 and not state['models'][0]['active']
         assert client.get('/api/local-models').is_success
+        if not incoming:
+            prefix_documents=f"/api/companies/{company['id']}/documents"
+            ids=[ident,hebrew_id]
+            preview=client.post(prefix_documents+'/delete-preview',json={'ids':ids});assert preview.is_success,preview.text
+            removal=client.post(prefix_documents+'/delete-permanently',json={'ids':ids,'token':preview.json()['token'],'confirmed':True});assert removal.is_success,removal.text
+            assert removal.json()['deleted']==2 and not removal.json()['cleanup_pending']
+            assert client.get(prefix_documents).json()==[]
+            retained=client.get(prefix).json();assert len(retained['examples'])==len(retained['models'])==1
+            home=Path(env['INVOICE_DATA_DIR']) if source else Path(env['LOCALAPPDATA'])/'InvoiceAssistant/data'
+            assert not (home/'files'/doc['source_id']).exists()
+            assert (home/retained['examples'][0]['image']).is_file()
         bundle=client.get(prefix+'/transfer/export');assert bundle.is_success,bundle.text
         return fresh['installation_id'],bundle.content
     finally:
@@ -98,6 +127,6 @@ def main():
         for index in range(2):
             directory=root/f'install-{index}';directory.mkdir();identity,incoming=exercise(command,directory,8877+index,args.source,incoming);identities.append(identity)
         assert identities[0]!=identities[1], 'Independent installs reused a personal identity'
-    print('Standalone OCR, local CTC training, clean installs and explicit team-learning transfer: passed')
+    print('Standalone Hebrew OCR including optional Indra RTL, local CTC training, permanent deletion with retained learning, clean installs and explicit team-learning transfer: passed')
 
 if __name__=='__main__':main()

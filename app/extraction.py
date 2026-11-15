@@ -81,12 +81,20 @@ def supplier_name(lines):
     explicit=re.search(r'(?:שם\s+(?:הספק|ספק)|supplier\s*name)\s*[:：]\s*(.+)','\n'.join(lines),re.I)
     if explicit:return explicit[1].strip()
     candidates=[]
-    for index,line in enumerate(lines[:12]):
-        if re.search(TITLE,line,re.I) or flat(line).startswith(('לכבוד','billto','לקוח')):break
+    for index,line in enumerate(lines[:45]):
+        label=flat(line)
+        # Print/certificate banners precede the issuer in many multi-column PDFs.
+        if any(v in label for v in ('הדפסתחשבונית','מסמךממוחשב','דיגיטלית','חתימהדיגיטלית','עלידיגורם','page1of')):continue
+        if re.match(rf'^\s*{TITLE}',line,re.I) or label.startswith(('לכבוד','billto','לקוח')):break
         name=re.split(r'(?:עוסק\s*מורשה|עוסק\s*פטור|מספר\s*עוסק|ח[.״"\']?פ[.״"\']?\s*[:：]|VAT\s*ID)',line,flags=re.I)[0].strip(' |:')
         if re.search(r'טלפון|פקס|כתובת|רחוב|תאריך|מספר|subtotal|total|vat\b',name,re.I) or re.search(r'\d',name):continue
-        if len(re.findall(r'[א-תA-Za-z]{2,}',name))>=2:candidates.append(name)
-    if candidates:return candidates[0]
+        if len(re.findall(r'[א-תA-Za-z]{2,}',name))>=2:
+            legal=re.search(r'בע[״"]מ',name)
+            if legal:name=name[:legal.end()]
+            nearby=any(any(k in flat(other) for k in ('עוסקמורשה','מספרעוסק','vatid','חפ')) for other in lines[index+1:index+5])
+            score=5*bool(legal)+3*nearby- index/100
+            candidates.append((score,name))
+    if candidates:return max(candidates,key=lambda item:item[0])[1]
     for index,line in enumerate(lines[:-1]):
         if flat(line).startswith('מפיקהמסמך'):
             candidate=lines[index+1].strip(' .|')

@@ -62,9 +62,11 @@ function reviewIssueFocus(){
 }
 async function reviewOperation(task){
  if(reviewLocked()||!$('#review-form'))return;
- state.reviewBusy=true;updateReviewControls();
+ $('#review-operation-error')?.remove();state.reviewBusy=true;updateReviewControls();
  try{if(state.reviewSessionSaver)await state.reviewSessionSaver();await task();}
  catch(error){
+  let alert=$('#review-operation-error');if(!alert&&$('#review-workbench')){alert=document.createElement('div');alert.id='review-operation-error';alert.className='notice review-operation-error';alert.setAttribute('role','alert');$('#review-workbench').after(alert);}if(alert)alert.textContent='לא ניתן להשלים את הפעולה: '+error.message;
+  const validation=$('#approval-validation');if(validation)validation.open=true;
   const issues=$('#review-issues');if(issues){issues.innerHTML='<div class="notice" role="alert"></div>';issues.firstChild.textContent=error.message;reviewIssueFocus();}
   toast(error.message,true);
  }finally{state.reviewBusy=false;updateReviewControls();paintReviewChanges();}

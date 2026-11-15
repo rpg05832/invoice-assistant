@@ -165,10 +165,13 @@ def indra_recognize(path):
     try:
         import indra_ocr
         conv=indra_ocr.load(path=str(model_dir),threads=2,mode='ocr')
-        result=[]
-        for _,page in conv.convert(str(path)):result.append(page.text)
-        return {'available':True,'engine':'indra-rtl','text':'\n'.join(result),'warning':'Indra כפוף לרישיון המודל OpenRAIL-M; בדקו התאמה לשימוש המסחרי שלכם'}
-    except (ImportError,OSError,RuntimeError,ValueError) as exc:return {'available':False,'engine':'indra-rtl','text':'','warning':type(exc).__name__}
+        # Converter.convert uses cv2.imread, whose Windows paths are not Unicode
+        # safe. The application already supplies an individual normalized page.
+        with Image.open(path) as image:gray=np.ascontiguousarray(np.asarray(image.convert('L')))
+        page=conv.ocr(gray);text=page.text.strip()
+        if not text:return {'available':False,'engine':'indra-rtl','text':'','warning':'Indra לא החזיר טקסט מהעמוד. נסו סריקה חוזרת או סימון אזור לקריאה.'}
+        return {'available':True,'engine':'indra-rtl','text':text,'warning':'Indra כפוף לרישיון המודל OpenRAIL-M; בדקו התאמה לשימוש המסחרי שלכם'}
+    except (ImportError,OSError,RuntimeError,ValueError) as exc:return {'available':False,'engine':'indra-rtl','text':'','warning':'לא ניתן להפעיל את Indra. בדקו את התקנת המודל במסך זיהוי וחיבורים. פרטי התקלה: '+type(exc).__name__}
 
 
 def pdf_items(page):

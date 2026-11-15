@@ -5,6 +5,29 @@ from app import document_reading
 from .conftest import upload_doc,get_doc
 
 
+def test_supplier_name_ignores_print_banner_and_digital_signature_before_issuer():
+    fields=extract('Page 1 of 1 הדפסת חשבונית מקורית\nמסמך ממוחשב חתום\nדיגיטלית ומאושר\nעל ידי גורם\nאופק אל-גל בע"מ אופק\nרחוב הראשונים 158\nטלפון: 08-1111111\nעוסק מורשה: 987654321\nלכבוד: לקוח אחר\nחשבונית מס מרכזת 76543210 מקור')
+    assert fields['supplier_name']=='אופק אל-גל בע"מ'
+    assert fields['supplier_tax_id']=='987654321' and fields['number']=='76543210'
+
+
+def test_indra_reads_unicode_image_paths_without_native_filename_decoder(tmp_path,monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    from PIL import Image
+    from app import vision
+    root=tmp_path/'מודלים בעברית';models=root/'models/indra';models.mkdir(parents=True);(models/'rec_rtl.onnx').write_bytes(b'model placeholder')
+    image=tmp_path/'מסמך בעברית.png';Image.new('RGB',(120,80),'white').save(image)
+    seen=[]
+    def read(gray):
+        seen.append(gray.shape);assert gray.dtype.name=='uint8' and gray.flags.c_contiguous
+        return SimpleNamespace(text='חשבונית מס')
+    monkeypatch.setattr(vision,'assets',lambda:root)
+    monkeypatch.setitem(sys.modules,'indra_ocr',SimpleNamespace(load=lambda **kwargs:SimpleNamespace(ocr=read)))
+    result=vision.indra_recognize(image)
+    assert result['available'] and result['text']=='חשבונית מס' and seen==[(80,120)]
+
+
 @pytest.mark.parametrize('title',['חשבונית מס מספר :','חשבונית on מספר :','מספר :'])
 def test_supplier_header_and_slash_number_survive_ocr_title_noise(title):
     fields=extract('אופק שירותי חשבונאות עוסק מורשה 123456782\nכתובת: רחוב ראשון 12\n'+title+' 07/000531 מקור\nלכבוד: לקוח אחר\nשק מספר 9955')

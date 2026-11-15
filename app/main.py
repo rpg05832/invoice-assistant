@@ -762,6 +762,8 @@ def create_app(data_dir=None):
     model_runtime.register(app)
     learning_transfer.register(app,locals())
     review_tools.register(app,locals())
+    from . import document_lifecycle
+    document_lifecycle.register(app,locals())
     from . import updates
     updates.register(app,locals())
     return app

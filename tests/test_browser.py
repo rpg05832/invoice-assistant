@@ -545,6 +545,9 @@ def test_browser_inline_region_review_accept_reject_and_rescan(browser_app):
         page.get_by_role('button',name='בדיקה מהירה · 1 ממתינים',exact=True).click()
         page.get_by_role('button',name='סימון ופענוח צ׳ק',exact=True).click();select_region()
         expect(page.locator('#inline-region-value')).to_have_value('00002468')
+        expect(page.locator('#region-reading-draft img.check-preview')).to_have_count(1)
+        expect(page.locator('#review-field-loupe')).not_to_be_visible()
+        expect(page.locator('#region-actions img.check-preview')).to_have_count(0)
         assert page.locator('[data-check-number]').count()==0, 'A draft must not silently create a check'
         page.locator('#inline-region-value').fill('1');expect(page.locator('#inline-region-value')).to_have_value('1')
         page.locator('#field-number').press('Enter')
@@ -585,14 +588,15 @@ def test_browser_local_reread_keeps_unsaved_work_and_copies_selected_fields(brow
     page.goto(url);expect(page.locator('#dropzone')).to_be_visible();page.locator('#company').select_option(company['id'])
     page.get_by_role('button',name='בדיקה מהירה · 1 ממתינים',exact=True).click()
     page.locator('#field-number').fill('UNSAVED-EDIT');page.locator('#field-notes').fill('להשאיר את ההערה שלי')
-    page.get_by_role('button',name='פענוח מקומי חוזר למסמך',exact=True).click()
+    page.get_by_role('button',name='סריקה חוזרת למסמך',exact=True).click()
     expect(page.locator('[data-local-reread-field="number"]')).to_be_visible()
     expect(page.locator('#region-reading-draft')).to_contain_text('UNSAVED-EDIT')
+    expect(page.locator('[data-local-reread-field]')).to_have_count(1)
     expect(page.locator('#field-number')).to_have_value('UNSAVED-EDIT')
     assert page.request.get(path+'/documents').json()[0]['fields']['number']==doc['fields']['number']
     page.get_by_role('button',name='דחייה וחזרה לטופס',exact=True).click()
     expect(page.locator('#field-number')).to_have_value('UNSAVED-EDIT')
-    page.get_by_role('button',name='פענוח מקומי חוזר למסמך',exact=True).click()
+    page.get_by_role('button',name='סריקה חוזרת למסמך',exact=True).click()
     expect(page.locator('[data-local-reread-field="number"]')).to_be_visible()
     page.locator('[data-local-reread-field="number"]').check()
     page.get_by_role('button',name='העתקת השדות שסומנו לבדיקה',exact=True).click()
@@ -600,6 +604,119 @@ def test_browser_local_reread_keeps_unsaved_work_and_copies_selected_fields(brow
     expect(page.locator('#field-notes')).to_have_value('להשאיר את ההערה שלי')
     assert page.request.get(path+'/documents').json()[0]['status']=='review'
     page.keyboard.press('Escape');expect(page.locator('#modal')).not_to_be_visible()
+
+
+def test_browser_reread_reports_no_changes_and_uses_numeric_amount_equality(browser_app):
+    page,url,directory=browser_app
+    company,path,docs=seed_fast_review(page,url,'סריקה ללא הבדלים',count=1)
+    page.goto(url);expect(page.locator('#dropzone')).to_be_visible();page.locator('#company').select_option(company['id'])
+    page.get_by_role('button',name='בדיקה מהירה · 1 ממתינים',exact=True).click()
+    page.locator('#field-net').fill('100')
+    page.get_by_role('button',name='סריקה חוזרת למסמך',exact=True).click()
+    expect(page.locator('#region-reading-draft')).to_contain_text('לא נמצאו שינויים')
+    expect(page.locator('[data-local-reread-field]')).to_have_count(0)
+    expect(page.locator('[data-action="local-reread-accept"]')).to_have_count(0)
+    page.get_by_role('button',name='חזרה למסמך',exact=True).click()
+    page.keyboard.press('Escape');expect(page.locator('#modal')).not_to_be_visible()
+
+
+def test_browser_blocking_approval_and_indra_errors_are_visible_in_modal_layer(browser_app):
+    page,url,directory=browser_app
+    company,path,docs=seed_fast_review(page,url,'הודעות חסימה גלויות',count=2);first=docs[0]
+    assert page.request.patch(url+'/api/documents/'+first['id'],data={'revision':first['revision'],'supplier_id':None}).ok
+    page.goto(url);expect(page.locator('#dropzone')).to_be_visible();page.locator('#company').select_option(company['id'])
+    page.get_by_role('button',name='בדיקה מהירה · 2 ממתינים',exact=True).click()
+    page.get_by_role('button',name='אישור והבא · Enter ✓',exact=True).click()
+    expect(page.locator('#review-operation-error')).to_be_visible()
+    expect(page.locator('#review-operation-error')).to_contain_text('כרטיס ספק פעיל')
+    assert page.locator('#review-operation-error').bounding_box()['y']<200
+    expect(page.locator('#modal #toast')).to_be_visible()
+    expect(page.locator('#modal #toast')).to_contain_text('כרטיס ספק פעיל')
+    # A blocked approval must never prevent navigating to another pending invoice.
+    page.get_by_role('button',name='הבא שממתין לבדיקה',exact=True).click()
+    expect(page.locator('#review-progress')).to_contain_text('מסמך 2 מתוך 2')
+    page.locator('#approval-extra-actions>summary').click()
+    page.get_by_role('button',name='השוואה עם Indra בעברית',exact=True).click()
+    page.get_by_role('checkbox',name='בדקתי שהרישיון מתאים לשימוש שלי').check()
+    route=url+'/api/documents/'+docs[1]['id']+'/recognize-indra'
+    def missing_model(request):request.fulfill(status=409,json={'detail':'מודל Indra RTL אינו מותקן'})
+    page.route(route,missing_model)
+    try:
+        page.get_by_role('button',name='הפעלת זיהוי מקומי והשוואה',exact=True).click()
+        expect(page.locator('#modal #toast')).to_be_visible()
+        expect(page.locator('#modal #toast')).to_contain_text('אינו מותקן')
+        assert page.locator('#busy').evaluate('el=>el.parentElement.id')=='modal'
+    finally:page.unroute(route)
+    page.get_by_role('button',name='ביטול',exact=True).click()
+
+
+def test_browser_permanent_deletion_requires_preview_and_checked_confirmation(browser_app):
+    page,url,directory=browser_app
+    company,path,docs=seed_fast_review(page,url,'מחיקת מסמכי בדיקה',count=1)
+    page.goto(url);expect(page.locator('#dropzone')).to_be_visible();page.locator('#company').select_option(company['id'])
+    page.locator('[data-select]').first.check()
+    page.get_by_role('button',name='מחיקה לצמיתות',exact=True).click()
+    expect(page.get_by_role('dialog')).to_contain_text('fast-1.pdf')
+    confirm=page.get_by_role('button',name='מחיקת המסמכים וקובצי המקור לצמיתות',exact=True)
+    expect(confirm).to_be_disabled()
+    page.get_by_role('button',name='ביטול וחזרה',exact=True).click()
+    assert len(page.request.get(path+'/documents').json())==1
+    page.get_by_role('button',name='מחיקה לצמיתות',exact=True).click()
+    page.locator('#delete-documents-confirm').check();confirm.click()
+    expect(page.locator('#modal')).not_to_be_visible()
+    expect(page.locator('[data-select]')).to_have_count(0)
+    assert page.request.get(path+'/documents').json()==[]
+
+
+def test_browser_main_navigation_secondary_dialogs_and_action_registry(browser_app):
+    import json
+    import re
+    page,url,directory=browser_app
+    company,path,docs=seed_fast_review(page,url,'ביקורת תפריטים וכפתורים',count=1)
+    page.goto(url);expect(page.locator('#dropzone')).to_be_visible();page.locator('#company').select_option(company['id'])
+    page.wait_for_load_state('networkidle')
+    source=Path(__file__).resolve().parents[1]/'app/static'
+    action_names=sorted({action for script in source.glob('*.js') for action in re.findall(r'data-action="([a-z0-9-]+)"',script.read_text(encoding='utf-8'))})
+    missing=page.evaluate('(keys)=>keys.filter(key=>typeof actions[key]!=="function")',action_names)
+    assert missing==[],f'Visible action names without handlers: {missing}'
+    views=page.locator('nav [data-view]').evaluate_all('(nodes)=>nodes.map(node=>node.dataset.view)')
+    report={'registered_actions':action_names,'views':{},'dialogs':[]}
+    for view in views:
+        page.locator(f'nav [data-view="{view}"]').click()
+        page.wait_for_load_state('networkidle')
+        expect(page.locator('#page-title')).not_to_be_empty()
+        expect(page.locator('#view')).not_to_be_empty()
+        assert page.evaluate('state.view')==view
+        assert not page.locator('#toast.error:visible').count(),page.locator('#toast').inner_text()
+        report['views'][view]=page.locator('#view button').evaluate_all('(nodes)=>nodes.map(node=>({text:node.innerText,action:node.dataset.action||null,disabled:node.disabled}))')
+    dialogs=[('documents','group-pages','בדיקת עמודי המשך וכפילויות'),('documents','review-preferences','סביבת הבדיקה האישית שלי'),('suppliers','new-supplier','ספק'),('suppliers','import-suppliers','יבוא'),('deliveries','import-deliveries','יבוא'),('records','import-records','יבוא'),('learning','export-learning-bundle','יצוא למידה'),('learning','import-learning-bundle','יבוא למידה')]
+    for view,action,title in dialogs:
+        page.locator(f'nav [data-view="{view}"]').click();page.wait_for_load_state('networkidle')
+        page.locator(f'#view [data-action="{action}"]').first.click()
+        expect(page.locator('#modal')).to_be_visible()
+        expect(page.locator('#modal .dialog-header')).to_contain_text(title)
+        report['dialogs'].append(action)
+        page.locator('#modal .dialog-header [data-action="close"]').click()
+        expect(page.locator('#modal')).not_to_be_visible()
+    review_dialogs=[('review-calculator','review-workspace-tools'),('review-snippets','review-workspace-tools'),('review-flag','review-workspace-tools'),('evaluate-document','approval-extra-actions'),('prepare-payment','approval-extra-actions'),('document-learning-history','approval-extra-actions'),('personal-template-proposals','approval-more')]
+    for action,details in review_dialogs:
+        page.locator('nav [data-view="documents"]').click();page.wait_for_load_state('networkidle')
+        page.get_by_role('button',name='בדיקה מהירה · 1 ממתינים',exact=True).click()
+        if action=='document-learning-history':page.locator('#field-notes').fill('הערה לפני פתיחת תפריט משני')
+        page.locator(f'#{details}>summary').click()
+        page.locator(f'#modal [data-action="{action}"]').click()
+        page.wait_for_load_state('networkidle')
+        expect(page.locator('#modal .dialog-header')).not_to_contain_text('בדיקת מסמך')
+        expect(page.locator('#modal')).to_be_visible()
+        report['dialogs'].append(action)
+        if action=='document-learning-history':assert page.request.get(path+'/documents').json()[0]['fields']['notes']=='הערה לפני פתיחת תפריט משני'
+        page.locator('#modal .dialog-header [data-action="close"]').click()
+        expect(page.locator('#modal')).not_to_be_visible()
+    # Native-window updates is a separate primary control, outside the navigation list.
+    page.get_by_role('button',name='גרסה ועדכון התוכנה',exact=True).click()
+    expect(page.locator('#application-updates')).to_be_visible()
+    page.locator('#modal .dialog-header [data-action="close"]').click()
+    Path('test-results/menu-audit.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
 
 
 @pytest.mark.parametrize('width,height',[(1280,690),(1366,768),(1600,900),(1920,1080)])
