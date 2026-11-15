@@ -92,3 +92,13 @@ def test_local_hebrew_self_test_reads_known_sample(client):
     result=client.post('/api/ocr/self-test')
     assert result.status_code==200 and result.json()['ok'],result.text
     assert 'חשבונית' in result.json()['sample_text'] and '00001234' in result.json()['sample_text']
+
+
+def test_ocr_child_process_does_not_create_a_windows_console(monkeypatch):
+    from contextlib import contextmanager
+    @contextmanager
+    def context(*args,**kwargs):yield ['tesseract.exe','--version'],None
+    monkeypatch.setattr(ocr,'command_context',context);monkeypatch.setattr(ocr,'IS_WINDOWS',True)
+    calls=[];monkeypatch.setattr(ocr.subprocess,'run',lambda *args,**kwargs:calls.append(kwargs))
+    ocr.run_tesseract(['--version'])
+    assert calls[0]['creationflags']==0x08000000

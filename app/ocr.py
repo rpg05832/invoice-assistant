@@ -67,7 +67,7 @@ def command_context(arguments,quality='fast'):
 
 def run_tesseract(arguments,quality='fast',timeout=60):
     with command_context(arguments,quality) as (command,cwd):
-        return subprocess.run(command,cwd=cwd,capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=timeout,env={**os.environ,'OMP_THREAD_LIMIT':os.environ.get('OMP_THREAD_LIMIT','2')})
+        return subprocess.run(command,creationflags=0x08000000 if IS_WINDOWS else 0,cwd=cwd,capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=timeout,env={**os.environ,'OMP_THREAD_LIMIT':os.environ.get('OMP_THREAD_LIMIT','2')})
 
 def capabilities(quality='fast'):
     binary = binary_path();directory=language_directory(quality)

@@ -47,12 +47,15 @@ jobs:
       - name: Smoke test standalone Windows OCR and personal training
         if: runner.os == 'Windows'
         run: python scripts/smoke_standalone.py dist/InvoiceAssistant/InvoiceAssistant.exe
+      - name: Prepare Microsoft offline window runtime
+        if: runner.os == 'Windows'
+        run: python scripts/setup_webview.py
       - name: Build single-file per-user Windows installer
         if: runner.os == 'Windows'
         run: python scripts/build_installer.py
-      - name: Test installed app and data-preserving uninstall
+      - name: Test installed Windows window, updater and retained data
         if: runner.os == 'Windows'
-        run: python scripts/smoke_installer.py dist/InvoiceAssistant-Setup-0.1.0-x64.exe
+        run: python scripts/smoke_installer.py dist/InvoiceAssistant-Setup-0.2.0-x64.exe
       - name: Upload tested Windows installer
         if: success() && runner.os == 'Windows'
         uses: actions/upload-artifact@v4

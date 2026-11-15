@@ -1,3 +1,4 @@
+from .version import VERSION,build_info
 import csv
 import hashlib
 import io
@@ -67,7 +68,7 @@ def create_app(data_dir=None):
         advanced.initialize(c)
         learning.initialize(c)
 
-    app = FastAPI(title='Invoice Assistant', version='0.1.0')
+    app = FastAPI(title='Invoice Assistant', version=VERSION)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=['127.0.0.1', 'localhost', '[::1]', 'testserver'])
     app.state.data_dir = data
 
@@ -174,7 +175,7 @@ def create_app(data_dir=None):
     @app.get('/api/health')
     def health():
         with db() as c: c.execute('SELECT 1').fetchone()
-        return {'ok': True, 'version': '0.1.0', 'ocr': ocr.capabilities(), 'storage': 'sqlite', 'cloud_enabled': False}
+        return {'ok': True, 'version': VERSION, 'build':build_info(), 'ocr': ocr.capabilities(), 'storage': 'sqlite', 'cloud_enabled': False}
 
     @app.get('/api/catalog')
     def catalog():
@@ -761,6 +762,8 @@ def create_app(data_dir=None):
     model_runtime.register(app)
     learning_transfer.register(app,locals())
     review_tools.register(app,locals())
+    from . import updates
+    updates.register(app,locals())
     return app
 
 app = create_app()

@@ -7,7 +7,7 @@ const reviewLocked = () => Boolean(state.reviewBusy || state.reviewSaving);
 
 function reviewSignature(){
  const form=$('#review-form');
- return form?JSON.stringify([Array.from(new FormData(form)),state.checks,state.items,state.learningRegions]):null;
+ return form?JSON.stringify([Array.from(new FormData(form)).sort(([a,av],[b,bv])=>a.localeCompare(b)||String(av).localeCompare(String(bv))),state.checks,state.items,state.learningRegions]):null;
 }
 function reviewDirty(){return editableReview(state.current) && $('#review-form') && reviewSignature()!==state.reviewBaseline;}
 function reviewCandidates(){

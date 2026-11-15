@@ -23,7 +23,7 @@ def main():
     if hebrew.is_file():command.append('/DHebrewLanguageFile='+str(hebrew))
     command.append(str(ROOT/'scripts/windows_installer.iss'))
     subprocess.run(command,cwd=ROOT,check=True)
-    output=ROOT/'dist/InvoiceAssistant-Setup-0.1.0-x64.exe'
+    output=ROOT/'dist/InvoiceAssistant-Setup-0.2.0-x64.exe'
     digest=hashlib.sha256(output.read_bytes()).hexdigest()
     output.with_suffix('.exe.sha256').write_text(digest+'  '+output.name+'\n',encoding='utf-8')
     print(output);print('SHA256:',digest)

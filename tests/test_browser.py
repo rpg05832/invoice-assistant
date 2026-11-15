@@ -177,6 +177,7 @@ def test_browser_advanced_lists_profiles_pages_and_metrics(browser_app):
     page.locator('tbody tr').filter(has_text='continuation.pdf').get_by_role('button',name='פתיחה ←').click()
     expect(page.locator('#preview-page option')).to_have_count(2)
     page.locator('#preview-page').select_option(index=1)
+    page.locator('#approval-extra-actions>summary').click()
     page.get_by_role('button',name='הפרדת עמודי המשך').click()
     expect(page.get_by_role('dialog')).not_to_be_visible()
     page.set_viewport_size({'width':800,'height':1000});page.screenshot(path='test-results/tablet.png',full_page=True)
@@ -270,8 +271,10 @@ def test_browser_fast_review_saves_navigation_and_checks_every_approval(browser_
     page.get_by_role('tab',name='טקסט הפענוח',exact=True).click()
     expect(page.locator('#review-ocr-panel')).to_contain_text(first['fields']['number'])
     expect(page.locator('#source-image')).to_have_attribute('src',f"/api/documents/{first['id']}/image")
+    page.locator('#source-image').evaluate('img=>img.decode()')
+    initial_width=page.locator('#canvas').bounding_box()['width']
     page.get_by_role('button',name='הגדלת המקור',exact=True).click()
-    expect(page.locator('#canvas')).to_have_attribute('style','width: 125%;')
+    assert page.locator('#canvas').bounding_box()['width']>initial_width*1.2
     page.screenshot(path='test-results/fast-review-ocr.png',full_page=True)
     page.get_by_role('tab',name='נתונים לתיקון',exact=True).click()
     page.locator('#field-number').press('Enter')
@@ -589,3 +592,49 @@ def test_browser_local_reread_keeps_unsaved_work_and_copies_selected_fields(brow
     expect(page.locator('#field-notes')).to_have_value('להשאיר את ההערה שלי')
     assert page.request.get(path+'/documents').json()[0]['status']=='review'
     page.keyboard.press('Escape');expect(page.locator('#modal')).not_to_be_visible()
+
+
+@pytest.mark.parametrize('width,height',[(1280,690),(1366,768),(1600,900),(1920,1080)])
+def test_browser_approval_workspace_fits_page_and_core_fields(browser_app,width,height):
+    page,url,directory=browser_app
+    company,path,docs=seed_fast_review(page,url,f'מסך אישור {width}',count=1);doc=docs[0]
+    page.request.patch(url+'/api/documents/'+doc['id'],data={'revision':doc['revision'],'checks':[{'number':'00007531','confirmed':False,'region':None}]})
+    page.set_viewport_size({'width':width,'height':height})
+    page.goto(url);expect(page.locator('#dropzone')).to_be_visible();page.locator('#company').select_option(company['id']);page.get_by_role('button',name='בדיקה מהירה · 1 ממתינים',exact=True).click()
+    page.locator('#source-image').evaluate('img=>img.decode()');page.wait_for_timeout(150)
+    bounds=page.evaluate('''()=>{const box=e=>{const r=e.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right};};return {source:box(document.querySelector('#source-image')),stage:box(document.querySelector('#approval-source-stage')),editor:box(document.querySelector('.editor')),fields:['field-supplier_name','field-supplier_tax_id','supplier-link','field-number','field-date','field-net','field-vat','field-total'].map(id=>box(document.getElementById(id))),check:box(document.querySelector('[data-check-number]'))};}''')
+    assert bounds['source']['bottom']<=bounds['stage']['bottom']+1 and bounds['source']['right']<=bounds['stage']['right']+1
+    assert bounds['source']['top']>=bounds['stage']['top']-1 and bounds['source']['left']>=bounds['stage']['left']-1
+    for field in [*bounds['fields'],bounds['check']]:assert field['top']>=bounds['editor']['top'] and field['bottom']<=bounds['editor']['bottom']+1,bounds
+    page.screenshot(path=f'test-results/approval-workspace-{width}.png',full_page=True)
+    page.keyboard.press('Escape');expect(page.locator('#modal')).not_to_be_visible();page.set_viewport_size({'width':1440,'height':1100})
+
+
+def test_browser_update_flow_requires_check_download_then_install(browser_app):
+    page,url,directory=browser_app
+    page.set_viewport_size({'width':1280,'height':690})
+    state={'release':None,'job':None,'installed':False}
+    def status():return {'current':{'version':'0.2.0'},'supported':True,'source':'GitHub','release':state['release'],'job':state['job']}
+    def updates(route):route.fulfill(json=status())
+    def check(route):
+        state['release']={'version':'0.3.0','size':12345678,'notes':'<script>unsafe()</script>'};route.fulfill(json=status())
+    def download(route):state['job']={'state':'ready','progress':100};route.fulfill(json=status())
+    def install(route):
+        assert route.request.post_data_json['confirmed'] is True;state['installed']=True;route.fulfill(json={'installing':True})
+    routes={'/api/updates':updates,'/api/updates/check':check,'/api/updates/download':download,'/api/updates/install':install}
+    for path,handler in routes.items():page.route(url+path,handler)
+    try:
+        page.goto(url);page.get_by_role('button',name='גרסה ועדכון התוכנה',exact=True).click()
+        expect(page.locator('#application-updates')).to_contain_text('0.2.0')
+        page.get_by_role('button',name='בדיקת עדכון חדש',exact=True).click()
+        expect(page.locator('#application-updates')).to_contain_text('0.3.0')
+        assert page.locator('#application-updates script').count()==0 and not state['installed']
+        page.get_by_role('button',name='הורדת העדכון מ־GitHub',exact=True).click()
+        expect(page.get_by_role('button',name='התקנה והפעלה מחדש',exact=True)).to_be_visible()
+        assert not state['installed']
+        page.get_by_role('button',name='התקנה והפעלה מחדש',exact=True).click()
+        expect(page.locator('#application-update-status')).to_contain_text('תיסגר ותיפתח מחדש')
+        assert state['installed'];page.get_by_role('button',name='סגירה',exact=True).last.click()
+    finally:
+        for path in routes:page.unroute(url+path)
+        page.set_viewport_size({'width':1440,'height':1100})

@@ -19,6 +19,8 @@ def main():
         executable=target/'InvoiceAssistant.exe';assert executable.is_file(),'Installed executable missing'
         script=Path(__file__).resolve().with_name('smoke_standalone.py')
         subprocess.run([sys.executable,str(script),str(executable)],env=env,check=True,timeout=240)
+        native=Path(__file__).resolve().with_name('smoke_desktop.py')
+        subprocess.run([sys.executable,str(native),str(executable),'--installer',str(installer)],env=env,check=True,timeout=420)
         # Data is intentionally outside {app}; uninstall must never remove it.
         marker=personal/'InvoiceAssistant/data/preservation-marker.txt';marker.parent.mkdir(parents=True,exist_ok=True);marker.write_text('private data must remain',encoding='utf-8')
         uninstaller=target/'unins000.exe';assert uninstaller.is_file()
