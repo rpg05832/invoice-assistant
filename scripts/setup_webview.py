@@ -24,7 +24,7 @@ def main():
     if not 50_000_000<target.stat().st_size<450_000_000:raise ValueError('Expected the full offline WebView2 installer, not a network bootstrapper')
     # Keep the original Microsoft binary and validate its publisher before bundling.
     literal="'"+str(target).replace("'","''")+"'"
-    script=f"$s=Get-AuthenticodeSignature -LiteralPath {literal}; if($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch 'CN=Microsoft Corporation'){{throw 'Invalid WebView2 Microsoft signature'}}"
+    script=f"$ErrorActionPreference='Stop'; $env:PSModulePath=$PSHOME+'\\Modules'; $s=Get-AuthenticodeSignature -LiteralPath {literal}; if($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch 'CN=Microsoft Corporation'){{throw 'Invalid WebView2 Microsoft signature'}}"
     subprocess.run(['powershell','-NoProfile','-NonInteractive','-Command',script],check=True)
     print('Verified Microsoft offline WebView2 runtime:',target.stat().st_size,'bytes; SHA256',hashlib.sha256(target.read_bytes()).hexdigest())
 if __name__=='__main__':main()

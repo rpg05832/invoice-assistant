@@ -48,7 +48,8 @@ def ps_literal(value):return "'"+str(value).replace("'","''")+"'"
 
 def helper_script(installer,install_dir,pid,log):
     # Values are locally derived paths, never executable text from release notes.
-    return f"""$ErrorActionPreference='Stop'
+    return f"""$env:PSModulePath=$PSHOME+'\\Modules'
+$ErrorActionPreference='Stop'
 try {{
  $p=Get-Process -Id {int(pid)} -ErrorAction SilentlyContinue
  if($p) {{ Wait-Process -Id {int(pid)} -Timeout 60 -ErrorAction Stop }}
