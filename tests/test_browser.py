@@ -210,16 +210,19 @@ def test_browser_personal_learning_and_real_local_training(browser_app):
 def test_browser_learning_export_preview_and_import_to_new_company(browser_app):
     page,url,directory=browser_app
     page.goto(url);page.locator('nav [data-view="learning"]').click()
+    export_button=page.get_by_role('button',name='יצוא חבילת למידה למחשב אחר או לצוות',exact=True)
+    expect(export_button).to_be_visible()
     source_company=page.locator('#company').input_value()
-    page.get_by_role('button',name='יצוא חבילת למידה למחשב אחר או לצוות',exact=True).click()
+    export_button.click()
     with page.expect_download() as download:
         page.get_by_role('button',name='הורדת חבילת הלמידה שנבחרה',exact=True).click()
     bundle=directory/'learning-for-team.zip';download.value.save_as(bundle)
     page.get_by_role('button',name='＋ הוספת חברה',exact=True).first.click()
     page.get_by_label('שם החברה').fill('חברת יעד ללמידה')
-    page.get_by_role('button',name='יצירת חברה').click()
-    expect(page.locator('#company')).not_to_have_value(source_company)
-    target_company=page.locator('#company').input_value()
+    with page.expect_response(lambda response: response.url==url+'/api/companies' and response.request.method=='POST') as created:
+        page.get_by_role('button',name='יצירת חברה').click()
+    target_company=created.value.json()['id']
+    expect(page.locator('#company')).to_have_value(target_company)
     assert target_company!=source_company
     page.locator('nav [data-view="learning"]').click()
     page.get_by_role('button',name='יבוא חבילת למידה ממחשב אחר או מצוות',exact=True).click()
@@ -233,6 +236,11 @@ def test_browser_learning_export_preview_and_import_to_new_company(browser_app):
     assert page.request.get(url+f'/api/companies/{target_company}/documents').json()==[]
     assert page.request.get(url+f'/api/companies/{source_company}/documents').json()
     page.screenshot(path='test-results/learning-transfer.png',full_page=True)
+    # Reload must display the remembered target company, even when it is not first.
+    page.goto(url)
+    expect(page.locator('#company')).to_have_value(target_company)
+    expect(page.locator('#dropzone')).to_be_visible()
+    assert page.evaluate('state.company.id')==target_company
 
 
 def seed_fast_review(page,url,name,confirm=True,count=3):
