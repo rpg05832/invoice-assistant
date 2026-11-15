@@ -89,6 +89,10 @@ def launch(app,port=8765):
         else:raise RuntimeError('פתיחת התוכנה לא הושלמה בזמן')
         window=webview.create_window(TITLE,f'http://127.0.0.1:{port}',width=1440,height=960,min_size=(1060,650),maximized=True,text_select=True)
         app.state.desktop_close=lambda:window.destroy()
+        def choose_folder():
+            selected=window.create_file_dialog(webview.FileDialog.FOLDER)
+            return selected[0] if selected else None
+        app.state.folder_picker=choose_folder
         window.events.closing+=close_guard(window,app)
         window.events.loaded+=lambda:status('ready')
         window.events.closed+=lambda:setattr(server,'should_exit',True)

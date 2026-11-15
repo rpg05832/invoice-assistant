@@ -161,7 +161,8 @@ def register(app,s):
             if region:
                 with tempfile.TemporaryDirectory() as temp:
                     path=Path(temp)/'region.png';crop(source,region,path);image=path.read_bytes()
-            else:image=(data/source['image']).read_bytes()
+            else:
+                with db() as c:image=s['image_path'](c,source).read_bytes()
             result=provider_call(config,key,image)
         except (httpx.HTTPError,KeyError,ValueError,OSError) as exc:
             with db() as c:

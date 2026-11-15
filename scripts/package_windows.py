@@ -24,7 +24,7 @@ def main():
     install_digits()
     from setup_sequences import main as install_sequences
     install_sequences()
-    output = ROOT / 'dist' / 'invoice-assistant-0.2.2-windows-source.zip'
+    output = ROOT / 'dist' / 'invoice-assistant-0.3.0-windows-source.zip'
     output.parent.mkdir(exist_ok=True)
     tracked = subprocess.check_output(['git', '-C', str(ROOT), 'ls-files', '-z']).decode().split('\0')
     paths = [Path(p) for p in tracked if p and not p.startswith(('.github/', 'tests/'))]

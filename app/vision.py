@@ -15,26 +15,28 @@ from . import ocr
 from .paths import assets
 
 
-def preprocess(source, destination):
+def preprocess(source, destination, transform=None):
     with Image.open(source) as image:
         image = ImageOps.exif_transpose(image).convert('RGB')
-        quarter=ocr.orientation(source)
+        quarter=transform['quarter_rotation'] if transform is not None else ocr.orientation(source)
         if quarter:image=image.rotate(-quarter,expand=True,fillcolor='white')
         array = np.array(image)
-    gray = cv2.cvtColor(array, cv2.COLOR_RGB2GRAY)
-    small = cv2.resize(gray, None, fx=min(1,1600/gray.shape[1]), fy=min(1,1600/gray.shape[1]))
-    edges = cv2.Canny(small, 60, 180)
-    lines = cv2.HoughLinesP(edges, 1, np.pi/1800, threshold=80, minLineLength=max(50,small.shape[1]//8), maxLineGap=20)
-    angles=[]
-    if lines is not None:
-        for x1,y1,x2,y2 in lines[:,0]:
-            angle=math.degrees(math.atan2(y2-y1,x2-x1))
-            if abs(angle)<12: angles.append(angle)
-    angle=float(np.median(angles)) if len(angles)>=3 else 0
+    if transform is not None:angle=transform['deskew_degrees']
+    else:
+        gray = cv2.cvtColor(array, cv2.COLOR_RGB2GRAY)
+        small = cv2.resize(gray, None, fx=min(1,1600/gray.shape[1]), fy=min(1,1600/gray.shape[1]))
+        edges = cv2.Canny(small, 60, 180)
+        lines = cv2.HoughLinesP(edges, 1, np.pi/1800, threshold=80, minLineLength=max(50,small.shape[1]//8), maxLineGap=20)
+        angles=[]
+        if lines is not None:
+            for x1,y1,x2,y2 in lines[:,0]:
+                angle=math.degrees(math.atan2(y2-y1,x2-x1))
+                if abs(angle)<12: angles.append(angle)
+        angle=float(np.median(angles)) if len(angles)>=3 else 0
     corrected=image.rotate(angle,expand=True,fillcolor='white',resample=Image.Resampling.BICUBIC) if abs(angle)>.2 else image
     corrected=ImageOps.autocontrast(corrected.convert('RGB'))
     corrected.save(destination,'PNG')
-    return {'quarter_rotation':quarter,'deskew_degrees':round(angle,2),'contrast':'autocontrast'}
+    return {'quarter_rotation':quarter,'deskew_degrees':angle,'contrast':'autocontrast'}
 
 
 def tokens(path,quality='fast',psm=3):

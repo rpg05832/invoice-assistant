@@ -51,7 +51,8 @@ def register(app,s):
         signature=[(d['id'],d['source_id'],d['revision'],d['status']) for d in docs]
         token=hashlib.sha256(L.encode(signature).encode()).hexdigest()
         examples=sum(c.execute('SELECT COUNT(*) FROM learning_examples WHERE document_id=?',(i,)).fetchone()[0] for i in ids)
-        return {'token':token,'ids':ids,'sources':sorted(sources),'selected_count':len(selected),'documents':[{'id':d['id'],'name':d['source_name'],'page':d['page'],'number':json.loads(d['fields']).get('number',''),'status':d['status']} for d in docs],'blocked':blocked,'training_active':training,'can_delete':not blocked and not training,'retained_examples':examples}
+        linked=[dict(r) for r in c.execute('SELECT * FROM source_links') if r['source_id'] in sources]
+        return {'token':token,'ids':ids,'sources':sorted(sources),'linked_sources':len(linked),'selected_count':len(selected),'documents':[{'id':d['id'],'name':d['source_name'],'page':d['page'],'number':json.loads(d['fields']).get('number',''),'status':d['status']} for d in docs],'blocked':blocked,'training_active':training,'can_delete':not blocked and not training,'retained_examples':examples}
 
     @app.post('/api/companies/{company_id}/documents/delete-preview')
     def preview(company_id:str,payload:dict=Body(...)):
@@ -90,7 +91,11 @@ def register(app,s):
             # Split-parent references must be detached before removing the source group.
             for ident in value['ids']:c.execute('UPDATE documents SET parent_id=NULL WHERE parent_id=?',(ident,))
             for ident in value['ids']:c.execute('DELETE FROM documents WHERE id=?',(ident,))
-            for ident in value['sources']:c.execute('DELETE FROM sources WHERE id=?',(ident,))
+            for ident in value['sources']:
+                linked=c.execute('SELECT l.folder_id,s.sha FROM source_links l JOIN sources s ON s.id=l.source_id WHERE l.source_id=?',(ident,)).fetchone()
+                if linked:c.execute('INSERT OR IGNORE INTO folder_ignored VALUES(?,?)',(linked['folder_id'],linked['sha']))
+                c.execute('DELETE FROM source_links WHERE source_id=?',(ident,))
+                c.execute('DELETE FROM sources WHERE id=?',(ident,))
             c.execute('INSERT INTO deletion_cleanup VALUES(?,?,?)',(uuid.uuid4().hex,company_id,L.encode(value['sources'])))
             s['audit'](c,company_id,None,'documents_deleted_permanently',{'documents':len(value['ids']),'source_files':len(value['sources']),'personal_learning_retained':True})
         pending=cleanup(company_id)

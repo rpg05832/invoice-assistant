@@ -140,3 +140,20 @@ def test_reread_coordinates_return_to_original_split_page(rotation,expected):
     region=document_reading.original_region(doc,{'x':.1,'y':.2,'w':.3,'h':.4,'rotation':0})
     assert tuple(region[k] for k in ('x','y','w','h'))==pytest.approx(expected)
     assert region['source_document_id']=='test' and region['rotation']==rotation
+
+
+def test_supplier_title_is_never_a_marketing_slogan_or_short_logo_scrap():
+    for text in [
+        'מחירים מיוחדים למוסדות ובתי כנסת\nמרכז הציוד והמזכרות\nעוסק מורשה 987654321',
+        'מרכז הציוד והמזכרות מחירים מיוחדים למוסדות ובתי כנסת\nעוסק מורשה 987654321',
+        'Toa סג\nORON TRAVEL service\nעוסק מורשה 987654321',
+    ]:
+        name=extract(text+'\nחשבונית מס 123')['supplier_name']
+        assert name in ('מרכז הציוד והמזכרות','ORON TRAVEL service')
+
+
+def test_recipient_tax_in_its_own_column_is_excluded_from_issuer_identity():
+    def word(text,x,y,w=.12):return {'text':text,'x':x,'y':y,'w':w,'h':.02}
+    words=[word('לכבוד',.8,.12),word('עוסק',.8,.2),word('מורשה',.69,.2),word('123456789',.55,.2),word('עוסק',.22,.2),word('מורשה',.12,.2),word('987654321',.01,.2)]
+    fields=extract('חברת טיולים לדוגמה\nלכבוד לקוח\nעוסק מורשה 123456789\nעוסק מורשה 987654321',words)
+    assert fields['recipient_tax_id']=='123456789' and fields['supplier_tax_id']=='987654321'

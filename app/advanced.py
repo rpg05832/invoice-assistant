@@ -90,7 +90,10 @@ def enrich(c,d):
     from .learning import normalize_check_proposal
     d['suggested_checks']=[normalize_check_proposal(p) for p in d['suggested_checks']]
     ids=[d['id']]+[r[0] for r in c.execute('SELECT child_id FROM document_links WHERE primary_id=?',(d['id'],))]
+    order=value.get('joined_page_order',[])
+    ids=([i for i in order if i in ids]+[i for i in ids if i not in order])
     d['pages']=[dict(r) for i in ids for r in c.execute('SELECT id,source_id,page,region,engine FROM documents WHERE id=?',(i,))]
+    for index,page in enumerate(d['pages'],1):page.update(logical_page=index,total_pages=len(ids))
     d['supplier_suggestions']=[]
     name=d['fields'].get('supplier_name','')
     if name and not d['supplier_id']:
@@ -268,13 +271,18 @@ def register(app,s):
     @app.get('/api/companies/{company_id}/grouping-suggestions')
     def grouping_suggestions(company_id:str):
         with db() as c:
+            from .continuations import groups as continuation_groups
             company(c,company_id);groups={}
-            for row in c.execute("SELECT id FROM documents WHERE company_id=? AND status IN ('review','approved','rejected')",(company_id,)):
-                d=document(c,row['id']);f=d['fields']
-                if not f.get('number'):continue
+            linked={r[0] for r in c.execute('SELECT child_id FROM document_links UNION SELECT primary_id FROM document_links')}
+            documents=[document(c,r['id']) for r in c.execute("SELECT id FROM documents WHERE company_id=? AND status IN ('review','approved','rejected')",(company_id,)) if r['id'] not in linked]
+            strong=continuation_groups(documents);strong_ids={d['id'] for group in strong for d in group}
+            result=[{'documents':[{'id':d['id'],'source_name':d['source_name'],'page':d['page'],'number':d['fields']['number'],'revision':d['revision']} for d in group],'continuation':True,'reason':'רצף מלא של דף 1 עד דף אחרון, באותו קובץ ובאותו מספר חשבונית. העמודים יחוברו לפי הסדר המודפס.'} for group in strong]
+            for d in documents:
+                f=d['fields']
+                if not f.get('number') or d['id'] in strong_ids:continue
                 key=(f.get('supplier_tax_id') or d['supplier_id'] or '',f['kind'],f['number'].strip().casefold())
                 groups.setdefault(key,[]).append({'id':d['id'],'source_name':d['source_name'],'page':d['page'],'number':f['number'],'complete_fields':sum(bool(f.get(k)) for k in ('number','date','net','vat','total'))})
-            return [{'documents':sorted(values,key=lambda d:d['complete_fields'],reverse=True),'reason':'אותו מספר מסמך וסוג באותה חברה. ייתכנו עמודי המשך או כפילות; בחרו במפורש כיצד לטפל.'} for values in groups.values() if len(values)>1]
+            return result+[{'documents':sorted(values,key=lambda d:d['complete_fields'],reverse=True),'reason':'אותו מספר מסמך וסוג באותה חברה. ייתכנו עמודי המשך או כפילות; בחרו במפורש כיצד לטפל.'} for values in groups.values() if len(values)>1]
 
     @app.post('/api/companies/{company_id}/records/{kind}/preview')
     def preview_records(company_id:str,kind:str,file:UploadFile=File(...)):
@@ -324,6 +332,13 @@ def register(app,s):
         with db() as c:
             primary=document(c,doc_id);editable(primary)
             if c.execute('SELECT 1 FROM document_links WHERE child_id=?',(doc_id,)).fetchone():fail('מסמך זה כבר צורף כעמוד המשך')
+            all_docs=[primary]+[document(c,ident,primary['company_id']) for ident in ids]
+            expected=payload.get('revisions')
+            if expected is not None and (not isinstance(expected,dict) or any(expected.get(d['id'])!=d['revision'] for d in all_docs)):fail('אחד העמודים השתנה. רעננו את הקבוצה לפני החיבור',409)
+            from .continuations import groups as continuation_groups
+            sequence=next(iter(continuation_groups(all_docs)),None)
+            automatic=payload.get('_automatic') is True
+            if automatic and (not sequence or any(d['revision']!=1 or d['status']!='review' for d in all_docs)):fail('העמודים כבר נערכו; נדרש חיבור מפורש',409)
             checks=list(primary['checks']);suggestions=list(meta(c,doc_id).get('suggested_checks',[]));field_values={};source_fields={}
             for ident in ids:
                 child=document(c,ident,primary['company_id']);editable(child)
@@ -341,10 +356,34 @@ def register(app,s):
                     value=next(iter(values));fields[key]=value;origin=source_fields[(key,value)];engines[key]='joined-page:'+origin
                     region=meta(c,origin).get('field_sources',{}).get(key)
                     if region:sources[key]={**region,'image_document_id':origin}
-            save_meta(c,doc_id,{'suggested_checks':suggestions,'check_candidates_reviewed':False,'field_sources':sources,'field_engines':engines})
+            if automatic:
+                if any(page['fields'].get('kind')=='tax_receipt' for page in sequence):fields['kind']='tax_receipt'
+                # New OCR only: take summary fields from the logical final page,
+                # retaining the original page and its field provenance.
+                for page in sequence:
+                    for key in ('supplier_name','supplier_tax_id','recipient_tax_id','date','due_date','allocation','net','vat','total'):
+                        if not page['fields'].get(key) or (key not in ('net','vat','total') and fields.get(key)):continue
+                        fields[key]=page['fields'][key];engines[key]='joined-page:'+page['id']
+                        region=meta(c,page['id']).get('field_sources',{}).get(key)
+                        if region:sources[key]={**region,'image_document_id':page['id']}
+            order=[d['id'] for d in sequence] if sequence else [doc_id]+ids
+            save_meta(c,doc_id,{'joined_page_order':order,'suggested_checks':suggestions,'check_candidates_reviewed':False,'field_sources':sources,'field_engines':engines})
             c.execute("UPDATE documents SET status='review',checks=?,fields=?,revision=revision+1 WHERE id=?",(encode(checks),encode(fields),doc_id))
-            audit(c,primary['company_id'],doc_id,'joined',{'pages':ids})
+            audit(c,primary['company_id'],doc_id,'joined',{'pages':ids,'automatic':automatic,'logical_order':order})
             return describe(c,document(c,doc_id))
+
+    def auto_join(ids):
+        from .continuations import groups as continuation_groups
+        with db() as c:
+            groups=continuation_groups([document(c,ident) for ident in ids])
+        joined=[]
+        for group in groups:
+            try:
+                result=join(group[0]['id'],{'ids':[d['id'] for d in group[1:]],'_automatic':True})
+                joined.append({'id':result['id'],'pages':len(group)})
+            except HTTPException:pass
+        return joined
+    app.state.auto_join=auto_join
 
     @app.post('/api/documents/{doc_id}/unjoin')
     def unjoin(doc_id:str):
@@ -356,7 +395,7 @@ def register(app,s):
             checks=[ch for ch in d['checks'] if ch.get('source_document_id',doc_id)==doc_id]
             value=meta(c,doc_id)
             own_suggestions=[proposal for proposal in value.get('suggested_checks',[]) if proposal.get('source_document_id',doc_id)==doc_id]
-            save_meta(c,doc_id,{'suggested_checks':own_suggestions,'check_candidates_reviewed':False})
+            save_meta(c,doc_id,{'joined_page_order':[],'suggested_checks':own_suggestions,'check_candidates_reviewed':False})
             c.execute("UPDATE documents SET status='review',checks=?,revision=revision+1 WHERE id=?",(encode(checks),doc_id))
             audit(c,d['company_id'],doc_id,'unjoined',{'pages':ids})
         return {'ids':ids}
@@ -364,8 +403,9 @@ def register(app,s):
     @app.post('/api/documents/{doc_id}/split-suggestions')
     def suggest_split(doc_id:str):
         from .vision import suggest_regions
-        with db() as c:d=document(c,doc_id)
-        return suggest_regions(data/d['image'])
+        with db() as c:
+            d=document(c,doc_id)
+            return suggest_regions(s['image_path'](c,d))
 
     @app.post('/api/documents/{doc_id}/rotate')
     def rotate_preview(doc_id:str,payload:dict=Body(...)):
@@ -378,7 +418,7 @@ def register(app,s):
                 d=document(c,doc_id);editable(d)
                 if payload.get('revision')!=d['revision']:fail('המסמך עודכן. יש לרענן לפני סיבוב',409)
                 path=(data/d['image']).with_name('rotate-'+uuid.uuid4().hex+'.png')
-                with Image.open(data/d['image']) as image:image.rotate(-angle,expand=True).save(path,'PNG')
+                with Image.open(s['image_path'](c,d)) as image:image.rotate(-angle,expand=True).save(path,'PNG')
                 value=meta(c,doc_id);sources=value.get('field_sources',{})
                 for r in sources.values():
                     if r.get('source_document_id'):continue
@@ -401,7 +441,7 @@ def register(app,s):
         from .learning import normalize_check_proposal
         with db() as c:
             d=document(c,doc_id);editable(d)
-            source=data/'files'/d['source_id']/f"page-{d['page']}.png"
+            source=s['image_path'](c,d,True)
             fields=d['fields'];excluded=[fields.get(key,'') for key in ('supplier_tax_id','recipient_tax_id','number','allocation')]
             results=suggested_checks(source,excluded,propose=lambda path:app.state.check_proposals(c,d,path)['proposals'])
             for result in results:result['source_document_id']=doc_id
@@ -423,7 +463,7 @@ def register(app,s):
         if payload.get('license_accepted') is not True:fail('יש לאשר את התאמת רישיון המודל לשימוש לפני הפעלת Indra')
         with db() as c:
             d=document(c,doc_id);editable(d)
-            result=indra_recognize(data/d['image'])
+            result=indra_recognize(s['image_path'](c,d))
             if not result['available']:fail(result['warning'],409)
             proposal={**result,'fields':extract(result['text']),'checks':[],'items':[],'confirmed':False}
             run=uuid.uuid4().hex;c.execute('INSERT INTO recognition_runs VALUES(?,?,?,?,?)',(run,doc_id,'indra-rtl',encode(proposal),now()))

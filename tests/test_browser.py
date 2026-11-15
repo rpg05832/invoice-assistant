@@ -826,3 +826,86 @@ def test_browser_update_flow_requires_check_download_then_install(browser_app):
     finally:
         for path in routes:page.unroute(url+path)
         page.set_viewport_size({'width':1440,'height':1100})
+
+
+def test_browser_linked_folder_scan_relink_clear_and_delete_preserves_original(browser_app):
+    page,url,directory=browser_app
+    company,path,docs=seed_fast_review(page,url,'תיקייה מחוברת',count=0)
+    root=directory/'מקורות פרטיים';root.mkdir();original=root/'חשבונית.pdf';content=pdf_bytes('FOLDER-001');original.write_bytes(content)
+    page.goto(url);expect(page.locator('#dropzone')).to_be_visible();page.locator('#company').select_option(company['id'])
+    page.locator('nav [data-view="folders"]').click()
+    page.locator('#folder-path').fill(str(root))
+    page.get_by_role('button',name='חיבור וסריקת התיקייה',exact=True).click()
+    expect(page.locator('#folder-scan-status')).to_contain_text('הסריקה הסתיימה',timeout=30000)
+    expect(page.locator('.folder-row')).to_contain_text('1 קובצי מקור')
+    page.get_by_role('button',name='ניקוי תמונות התצוגה הזמניות').click()
+    expect(page.locator('#toast')).to_contain_text('נוקו')
+    moved=directory/'מקורות עברו מחשב';root.rename(moved)
+    page.get_by_role('button',name='עדכון מיקום התיקייה').click()
+    page.locator('#folder-new-path').fill(str(moved));page.get_by_role('button',name='שמירת מיקום התיקייה').click()
+    expect(page.locator('.folder-row')).to_contain_text(str(moved))
+    page.get_by_role('button',name='מעבר למסמכים לאישור',exact=True).click()
+    page.get_by_role('button',name='פתיחה ←',exact=True).first.click()
+    expect(page.locator('#source-image')).to_be_visible();expect(page.locator('#field-number')).to_have_value('FOLDER-001')
+    page.locator('#modal [data-action="delete-current-document"]').click()
+    expect(page.locator('#modal')).to_contain_text('מקורות מתיקיות מחוברות נשארים בתיקייה המקורית')
+    page.locator('#delete-documents-confirm').check();page.get_by_role('button',name='מחיקה לצמיתות מהתוכנה',exact=True).click()
+    expect(page.locator('#modal')).not_to_be_visible()
+    assert (moved/'חשבונית.pdf').read_bytes()==content
+    assert page.request.get(path+'/documents').json()==[]
+
+
+def test_browser_free_magnifier_and_toolbar_region_reread_keep_draft(browser_app):
+    page,url,directory=browser_app
+    company,path,docs=seed_fast_review(page,url,'הגדלה וסריקת אזור',count=1);doc=docs[0]
+    page.goto(url);expect(page.locator('#dropzone')).to_be_visible();page.locator('#company').select_option(company['id'])
+    page.get_by_role('button',name='בדיקה מהירה · 1 ממתינים',exact=True).click()
+    page.locator('#field-notes').fill('תיקון שיישמר')
+    page.get_by_role('button',name='זכוכית מגדלת',exact=True).click()
+    page.locator('#source-image').hover()
+    expect(page.locator('#source-pointer-loupe')).to_be_visible()
+    expect(page.locator('#review-field-loupe')).not_to_be_visible()
+    page.locator('#source-reread-field').select_option('supplier_name')
+    route=url+'/api/documents/'+doc['id']+'/field-region'
+    def focused(request):
+        payload=request.request.post_data_json
+        request.fulfill(json={'field':'supplier_name','text':'שם ספק מתוקן','engine':'tesseract','values':['שם ספק מתוקן'],'warning':'','region':payload['region'],'source_document_id':doc['id'],'confirmed':False})
+    page.route(route,focused)
+    try:
+        page.get_by_role('button',name='סריקת אזור',exact=True).click()
+        expect(page.locator('#source-pointer-loupe')).not_to_be_visible()
+        box=page.locator('#source-image').bounding_box();assert box
+        page.mouse.move(box['x']+box['width']*.1,box['y']+box['height']*.1);page.mouse.down();page.mouse.move(box['x']+box['width']*.75,box['y']+box['height']*.24,steps=8);page.mouse.up()
+        expect(page.locator('#inline-region-value')).to_have_value('שם ספק מתוקן')
+        page.get_by_role('button',name='אישור והעתקה לשדה',exact=True).click()
+        expect(page.locator('#field-supplier_name')).to_have_value('שם ספק מתוקן')
+        expect(page.locator('#field-notes')).to_have_value('תיקון שיישמר')
+        page.keyboard.press('Escape');expect(page.locator('#modal')).not_to_be_visible()
+        saved=page.request.get(path+'/documents').json()[0]
+        assert saved['fields']['supplier_name']=='שם ספק מתוקן' and saved['fields']['notes']=='תיקון שיישמר' and saved['status']=='review'
+    finally:page.unroute(route)
+
+
+def test_browser_continuation_pages_follow_printed_order_and_existing_group_button(browser_app):
+    from .test_continuations import continuation_pdf
+    page,url,directory=browser_app
+    company,path,docs=seed_fast_review(page,url,'חשבונית רב עמודית',count=0)
+    upload=page.request.post(path+'/upload',multipart={'file':{'name':'multi.pdf','mimeType':'application/pdf','buffer':continuation_pdf()}})
+    assert upload.ok and len(upload.json()['joined'])==1
+    main_id=upload.json()['joined'][0]['id']
+    page.goto(url);expect(page.locator('#dropzone')).to_be_visible();page.locator('#company').select_option(company['id'])
+    page.get_by_role('button',name='בדיקה מהירה · 1 ממתינים',exact=True).click()
+    expect(page.locator('#preview-page option')).to_have_count(3)
+    assert page.locator('#preview-page option').all_text_contents()==['דף 1 מתוך 3 · מקור 2','דף 2 מתוך 3 · מקור 3','דף 3 מתוך 3 · מקור 1']
+    page.locator('#field-total').focus()
+    final_id=next(d['id'] for d in page.request.get(path+'/documents').json() if d['page']==1)
+    expect(page.locator('#preview-page')).to_have_value(final_id)
+    assert page.evaluate('state.previewDoc')==final_id
+    page.locator('#approval-extra-actions>summary').click();page.get_by_role('button',name='הפרדת עמודי המשך',exact=True).click()
+    expect(page.locator('#modal')).not_to_be_visible()
+    page.get_by_role('button',name='בדיקת עמודי המשך וכפילויות',exact=True).click()
+    expect(page.locator('[data-join-group]')).to_have_count(1)
+    page.get_by_role('button',name='חיבור לחשבונית אחת לפי סדר העמודים',exact=True).click()
+    expect(page.locator('#preview-page option')).to_have_count(3)
+    expect(page.locator('#field-total')).to_have_value('118.00')
+    page.keyboard.press('Escape');expect(page.locator('#modal')).not_to_be_visible()

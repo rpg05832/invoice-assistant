@@ -33,8 +33,9 @@ def restore(archive, target):
         try:
             if conn.execute('PRAGMA integrity_check').fetchone()[0] != 'ok': raise ValueError('Invalid database')
             if conn.execute('PRAGMA foreign_key_check').fetchall(): raise ValueError('Broken database references')
-            paths = {r[0] for r in conn.execute('SELECT path FROM sources')} | {r[0] for r in conn.execute('SELECT image FROM documents')}
             tables={r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            linked={r[0] for r in conn.execute('SELECT source_id FROM source_links')} if 'source_links' in tables else set()
+            paths = {r[1] for r in conn.execute('SELECT id,path FROM sources') if r[0] not in linked} | {r[1] for r in conn.execute('SELECT source_id,image FROM documents') if r[0] not in linked}
             if 'learning_examples' in tables:paths.update(r[0] for r in conn.execute('SELECT image FROM learning_examples'))
             if 'learning_shared_examples' in tables:paths.update(r[0] for r in conn.execute('SELECT image FROM learning_shared_examples'))
             if 'learning_models' in tables:paths.update(r[0] for r in conn.execute('SELECT path FROM learning_models'))

@@ -86,13 +86,20 @@ def supplier_name(lines):
         # Print/certificate banners precede the issuer in many multi-column PDFs.
         if any(v in label for v in ('הדפסתחשבונית','מסמךממוחשב','דיגיטלית','חתימהדיגיטלית','עלידיגורם','page1of')):continue
         if re.match(rf'^\s*{TITLE}',line,re.I) or label.startswith(('לכבוד','billto','לקוח')):break
+        line=re.split(r'מחירים\s+מ[א-ת*]*וחדים|מחירים\s+מיוחדים',line,maxsplit=1)[0].strip(' |:.,')
+        if not line or flat(line).startswith(('מבצעים','המבצעיםשלנו')):continue
         name=re.split(r'(?:עוסק\s*מורשה|עוסק\s*פטור|מספר\s*עוסק|ח[.״"\']?פ[.״"\']?\s*[:：]|VAT\s*ID)',line,flags=re.I)[0].strip(' |:')
         if re.search(r'טלפון|פקס|כתובת|רחוב|תאריך|מספר|subtotal|total|vat\b',name,re.I) or re.search(r'\d',name):continue
         if len(re.findall(r'[א-תA-Za-z]{2,}',name))>=2:
             legal=re.search(r'בע[״"]מ',name)
             if legal:name=name[:legal.end()]
-            nearby=any(any(k in flat(other) for k in ('עוסקמורשה','מספרעוסק','vatid','חפ')) for other in lines[index+1:index+5])
-            score=5*bool(legal)+3*nearby- index/100
+            distance=next((offset for offset,other in enumerate(lines[index:index+5]) if any(k in flat(other) for k in ('עוסקמורשה','מספרעוסק','vatid','חפ'))),None)
+            nearby=max(0,4-distance) if distance is not None else 0
+            tokens=re.findall(r'[א-תA-Za-z]{2,}',name)
+            # Short scraps around logos must not outrank a readable business line.
+            mixed=bool(re.search('[א-ת]',name) and re.search('[A-Za-z]',name))
+            junk=4 if mixed and sum(map(len,tokens))<8 else 0
+            score=5*bool(legal)+nearby-junk-index/100
             candidates.append((score,name))
     if candidates:return max(candidates,key=lambda item:item[0])[1]
     for index,line in enumerate(lines[:-1]):
@@ -119,6 +126,18 @@ def currency_for(lines):
     return 'ILS'
 
 
+def recipient_identifiers(words):
+    headings=[w for w in words if flat(w['text']) in ('לכבוד','billto','לקוח')]
+    result=set()
+    for row_text,row in word_rows(words):
+        for heading in headings:
+            if not heading['y']<min(w['y'] for w in row)<heading['y']+.18:continue
+            same_column=[w for w in row if abs((w['x']+w['w']/2)-(heading['x']+heading['w']/2))<.30]
+            if any(k in flat(' '.join(w['text'] for w in same_column)) for k in ('עוסק','חפ','עמ','חברה')):
+                for word in same_column:result.update(re.findall(r'(?<!\d)\d{9}(?!\d)',word['text']))
+    return result
+
+
 def parse(text,fields,words=None,company_tax_id=''):
     text=re.sub('[\u200e\u200f\u202a-\u202e\u2066-\u2069]','',text).replace('−','-')
     lines=[line.strip() for line in text.splitlines() if line.strip()]
@@ -143,12 +162,14 @@ def parse(text,fields,words=None,company_tax_id=''):
             date_candidates.append((score-index/10000,value))
     if date_candidates:result['date']=max(date_candidates)[1]
     if due:result['due_date']=min(due)[1]
+    recipient_ids=recipient_identifiers(words or [])
+    if len(recipient_ids)==1:result['recipient_tax_id']=next(iter(recipient_ids))
     id_candidates=[]
     for index,line in enumerate(lines[:70]):
         label=flat(line);ids=re.findall(r'(?<!\d)[0-9]{9}(?!\d)',line)
         if not ids and any(k in label for k in ('עוסקמורשה','מספרעוסק','חפ','vatid','עמותרשומה')) and index+1<len(lines):ids=re.findall(r'(?<!\d)[0-9]{9}(?!\d)',lines[index+1])
         for ident in ids:
-            if ident==company_tax_id:result['recipient_tax_id']=ident;continue
+            if ident==company_tax_id or ident in recipient_ids:result['recipient_tax_id']=ident;continue
             if any(k in label for k in ('חברהלקוח','תיקמעמלקוח','חברה')) and not any(k in label for k in ('עוסק','עמותה')):
                 if not result['recipient_tax_id']:result['recipient_tax_id']=ident
                 continue

@@ -42,7 +42,7 @@ def refine(source,text,words,quality='fast'):
     for purpose,region in regions:
         extra,engine,warning,new_words=read_region(source,region,quality)
         if engine!='tesseract' or not extra:continue
-        text+='\n'+extra
+        text=extra+'\n'+text if purpose=='header' else text+'\n'+extra
         # The automatic regions are unrotated, so map coordinates back to source.
         for word in new_words:
             words.append({**word,'x':region['x']+word['x']*region['w'],'y':region['y']+word['y']*region['h'],'w':word['w']*region['w'],'h':word['h']*region['h']})
@@ -50,13 +50,18 @@ def refine(source,text,words,quality='fast'):
     return text,words,info
 
 
-def field_proposals(field,text):
-    parsed=extract(text);values=[]
+def field_proposals(field,text,words=None):
+    parsed=extract(text,words);values=[]
     if field in ('net','vat','total'):values=([parsed[field]] if parsed[field] else [])+amounts(text)
     elif field=='number':
         values=[parsed['number']] if parsed['number'] else re.findall(rf'(?<![\w/])({IDENTIFIER})(?![\w/])',text)
-    elif field=='supplier_tax_id':values=re.findall(r'(?<!\d)\d{9}(?!\d)',text)
+    elif field in ('supplier_tax_id','recipient_tax_id'):values=re.findall(r'(?<!\d)\d{9}(?!\d)',text)
     elif field=='supplier_name':values=[parsed['supplier_name'] or text.strip()]
+    elif field in ('date','due_date'):
+        from .extraction import dates
+        values=([parsed.get(field)] if parsed.get(field) else [])+dates(text)
+    elif field=='allocation':values=([parsed['allocation']] if parsed['allocation'] else re.findall(r'(?<!\d)\d{5,30}(?!\d)',text))
+    elif field=='notes':values=[text.strip()]
     return list(dict.fromkeys(v.strip() for v in values if v.strip()))[:20]
 
 

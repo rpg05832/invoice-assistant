@@ -24,7 +24,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from openpyxl import Workbook, load_workbook
 from PIL import Image, ImageOps
 
-from . import ocr, vision, advanced, learning, model_runtime, learning_transfer, review_tools, document_reading
+from . import ocr, vision, advanced, learning, model_runtime, learning_transfer, review_tools, document_reading, linked_sources
 from .domain import TARGETS, TYPES, FIELDS, EXPORT_FIELDS, extract, issues, money, safe_cell
 
 def uid(): return uuid.uuid4().hex
@@ -38,6 +38,7 @@ def create_app(data_dir=None):
     files = data / 'files'; files.mkdir(exist_ok=True)
     database = data / 'invoices.sqlite3'
     database_lock = threading.RLock()
+    database_scope=threading.local()
 
     @contextmanager
     def db():
@@ -48,7 +49,9 @@ def create_app(data_dir=None):
             try:
                 with conn:
                     conn.execute('BEGIN IMMEDIATE')
-                    yield conn
+                    previous=getattr(database_scope,'connection',None);database_scope.connection=conn
+                    try:yield conn
+                    finally:database_scope.connection=previous
             finally: conn.close()
 
     with db() as c:
@@ -67,10 +70,14 @@ def create_app(data_dir=None):
         ''')
         advanced.initialize(c)
         learning.initialize(c)
+        linked_sources.initialize(c)
 
     app = FastAPI(title='Invoice Assistant', version=VERSION)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=['127.0.0.1', 'localhost', '[::1]', 'testserver'])
     app.state.data_dir = data
+    source_store=linked_sources.Sources(data,db);app.state.source_store=source_store
+
+    def image_path(c,d,original=False):return source_store.image(c,d,original)
 
     @app.middleware('http')
     async def local_origin(request, call_next):
@@ -126,6 +133,7 @@ def create_app(data_dir=None):
         d['supplier'] = supplier_for(c, d)
         d['learning_context']=advanced.meta(c,d['id']).get('learning_context',{})
         d['supplier_reviewed']=bool(learning.supplier_review(c,d['supplier_id'],d['company_id'])) if d['supplier_id'] else False
+        d['source_link']=source_store.status(c,d['source_id'])
         return d
 
     def match_supplier(c, company_id, fields):
@@ -284,8 +292,7 @@ def create_app(data_dir=None):
             ids = c.execute('SELECT id FROM documents WHERE company_id=? ORDER BY created DESC', (company_id,)).fetchall()
             return [describe(c, document(c, r['id'])) for r in ids]
 
-    @app.post('/api/companies/{company_id}/upload')
-    def upload(company_id: str, file: UploadFile = File(...)):
+    def ingest(company_id,file,linked=None,cancelled=lambda:False):
         content = file.file.read(25_000_001)
         if not content or len(content) > 25_000_000: fail('יש לבחור קובץ עד 25MB')
         sha = hashlib.sha256(content).hexdigest()
@@ -294,8 +301,10 @@ def create_app(data_dir=None):
             duplicate = c.execute('SELECT id FROM sources WHERE company_id=? AND sha=?', (company_id, sha)).fetchone()
             if duplicate: fail('הקובץ הזה כבר קיים בחברה', 409)
         source_id = uid(); source_dir = files / source_id; source_dir.mkdir()
+        marker=source_dir/'pending-link.json'
+        if linked is not None:marker.write_text(encode({'folder_id':linked['folder_id']}),encoding='utf-8')
         original = source_dir / 'original'
-        original.write_bytes(content)
+        if linked is None:original.write_bytes(content)
         pages = []
         persisted=False
         try:
@@ -304,24 +313,27 @@ def create_app(data_dir=None):
                     if pdf.needs_pass: fail('PDF מוצפן אינו נתמך; יש להעלות עותק פתוח')
                     if not 1 <= len(pdf) <= 50: fail('אפשר להעלות עד 50 עמודים בקובץ')
                     for index, page in enumerate(pdf):
+                        if cancelled():fail('סריקת התיקייה הופסקה',409)
                         if page.rect.width * page.rect.height * 4 > 40_000_000: fail('עמוד PDF גדול מדי')
                         path = source_dir / f'page-{index+1}.png'
                         page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False).save(path)
                         text = page.get_text().strip()
+                        processing=None
                         if len(text) >= 20: engine, warning = 'pdf-text', ''
                         else:
                             prepared=source_dir/f'prepared-{index+1}.png'
-                            vision.preprocess(path,prepared);prepared.replace(path)
+                            processing=vision.preprocess(path,prepared);prepared.replace(path)
                             text,engine,warning=ocr.recognize(path,quality=company_info['ocr_quality']) if company_info.get('ocr_quality') in ('best','rivok') else ocr.recognize(path)
                         words = vision.pdf_tokens(page) if engine == 'pdf-text' else vision.tokens(path,quality=company_info.get('ocr_quality','fast'))
                         focused=[]
                         if engine=='tesseract':text,words,focused=document_reading.refine(path,text,words,company_info.get('ocr_quality','fast'))
-                        pages.append((index+1, path, text, engine, warning, words, {'items':vision.pdf_items(page),'processing':{'pdf_rotation':page.rotation},'focused_reading':focused}))
+                        pages.append((index+1, path, text, engine, warning, words, {'items':vision.pdf_items(page),'processing':{'pdf_rotation':page.rotation,**(processing or {})},'cache_recipe':{'preprocess':processing},'focused_reading':focused}))
             else:
                 with Image.open(io.BytesIO(content)) as img:
                     if img.format not in ('JPEG', 'PNG', 'TIFF', 'WEBP'): fail('פורמט תמונה לא נתמך')
                     if getattr(img, 'n_frames', 1) > 50: fail('אפשר להעלות עד 50 עמודים בקובץ')
                     for index in range(getattr(img, 'n_frames', 1)):
+                        if cancelled():fail('סריקת התיקייה הופסקה',409)
                         img.seek(index)
                         if img.width * img.height > 40_000_000: fail('התמונה גדולה מדי')
                         path = source_dir / f'page-{index+1}.png'
@@ -332,9 +344,13 @@ def create_app(data_dir=None):
                         text,engine,warning=ocr.recognize(path,quality=company_info['ocr_quality']) if company_info.get('ocr_quality') in ('best','rivok') else ocr.recognize(path)
                         words=vision.tokens(path,quality=company_info.get('ocr_quality','fast'));focused=[]
                         if engine=='tesseract':text,words,focused=document_reading.refine(path,text,words,company_info.get('ocr_quality','fast'))
-                        pages.append((index+1, path, text, engine, warning, words, {'processing':processing,'focused_reading':focused}))
+                        pages.append((index+1, path, text, engine, warning, words, {'processing':processing,'cache_recipe':{'preprocess':processing},'focused_reading':focused}))
+            if cancelled():fail('סריקת התיקייה הופסקה',409)
             with db() as c:
                 c.execute('INSERT INTO sources VALUES(?,?,?,?,?,?)', (source_id, company_id, (file.filename or 'document')[:250], original.relative_to(data).as_posix(), sha, now()))
+                if linked is not None:
+                    source_store.add(c,source_id,linked['folder_id'],linked['relative_path'],{str(p[0]):p[-1]['cache_recipe'] for p in pages})
+                    source_store.content(c,source_id)
                 ids=[]
                 for number,path,text,engine,warning,words,extra in pages:
                     ident=insert_document(c,company_id,source_id,number,path,text,engine,warning,tokens=words)
@@ -343,6 +359,8 @@ def create_app(data_dir=None):
                 config=recognition_settings(c,company_id)
                 failures=[ident for ident in ids if document(c,ident)['engine'] in ('failed','unavailable') or any(not document(c,ident)['fields'].get(key) for key in ('number','date','total'))]
             persisted=True
+            marker.unlink(missing_ok=True)
+            joined=app.state.auto_join(ids)
             proposals=[]
             if config.get('mode')=='on_failure':
                 for ident in failures:
@@ -350,7 +368,7 @@ def create_app(data_dir=None):
                         proposal=app.state.additional_recognize(ident,{'trigger':'failure','local_failed':True,'action':'document'})
                         proposals.append({'document_id':ident,'run_id':proposal['id']})
                     except HTTPException:pass
-            return {'ids':ids,'pages':len(ids),'additional_proposals':proposals}
+            return {'ids':ids,'pages':len(ids),'additional_proposals':proposals,'joined':joined}
         except Exception as exc:
             if persisted:return {'ids':ids,'pages':len(ids),'warning':'המסמכים נשמרו לבדיקה. הזיהוי הנוסף לא הושלם; אפשר להפעילו ידנית.'}
             import shutil
@@ -359,18 +377,24 @@ def create_app(data_dir=None):
             if isinstance(exc, sqlite3.IntegrityError): fail('הקובץ הזה כבר קיים בחברה', 409)
             fail('הקובץ אינו PDF או תמונה תקינים, או שלא ניתן לעבד אותו')
 
+    @app.post('/api/companies/{company_id}/upload')
+    def upload(company_id: str, file: UploadFile = File(...)):return ingest(company_id,file)
+
     @app.get('/api/documents/{doc_id}/image')
     def document_image(doc_id: str, original: bool = False):
         with db() as c:
             d = document(c, doc_id)
-            path = files / d['source_id'] / f"page-{d['page']}.png" if original else data / d['image']
-        return FileResponse(path, media_type='image/png')
+            path = source_store.acquire(c,d,original)
+        return FileResponse(path, media_type='image/png',background=BackgroundTask(source_store.release,path))
 
     @app.get('/api/documents/{doc_id}/source')
     def source_file(doc_id: str):
         with db() as c:
             d = document(c, doc_id)
             s = c.execute('SELECT * FROM sources WHERE id=?', (d['source_id'],)).fetchone()
+            if source_store.link(c,d['source_id']):
+                from urllib.parse import quote
+                return Response(source_store.content(c,d['source_id']),media_type='application/octet-stream',headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote(s['name'])})
             return FileResponse(data / s['path'], filename=s['name'], media_type='application/octet-stream')
 
     @app.patch('/api/documents/{doc_id}')
@@ -428,7 +452,10 @@ def create_app(data_dir=None):
 
     def crop(d, region, destination):
         validate_region(region)
-        with Image.open(files / d['source_id'] / f"page-{d['page']}.png") as img:
+        c=getattr(database_scope,'connection',None)
+        if c is None:
+            with db():return crop(d,region,destination)
+        with Image.open(image_path(c,d,True)) as img:
             x, y, w, h = [region[k] for k in ('x', 'y', 'w', 'h')]
             box = (round(x * img.width), round(y * img.height), round((x+w) * img.width), round((y+h) * img.height))
             if box[2] <= box[0] or box[3] <= box[1]: fail('האזור קטן מדי')
@@ -449,28 +476,41 @@ def create_app(data_dir=None):
     @app.post('/api/documents/{doc_id}/field-region')
     def field_region(doc_id:str,payload:dict=Body(...)):
         field=payload.get('field')
-        if field not in ('number','supplier_name','supplier_tax_id','net','vat','total'):fail('שדה לא נתמך בפענוח אזור')
+        if field not in ('number','supplier_name','supplier_tax_id','recipient_tax_id','date','due_date','allocation','notes','net','vat','total'):fail('שדה לא נתמך בפענוח אזור')
         region=payload.get('region');validate_region(region)
         with db() as c:
             d=document(c,doc_id);editable(d);source=advanced.source_document(c,d,payload.get('source_document_id'))
             # crop() retains the original page and validates the selected page scope.
             with tempfile.TemporaryDirectory() as directory:
                 target=Path(directory)/'field.png';crop(source,region,target)
-                text,engine,warning,_=document_reading.read_region(target,{'x':0,'y':0,'w':1,'h':1,'rotation':0},company(c,d['company_id']).get('ocr_quality','fast'))
-            return {'field':field,'text':text,'engine':engine,'warning':warning,'values':document_reading.field_proposals(field,text),'region':region,'source_document_id':source['id'],'confirmed':False}
+                text,engine,warning,words=document_reading.read_region(target,{'x':0,'y':0,'w':1,'h':1,'rotation':0},company(c,d['company_id']).get('ocr_quality','fast'))
+            return {'field':field,'text':text,'engine':engine,'warning':warning,'values':document_reading.field_proposals(field,text,words),'region':region,'source_document_id':source['id'],'confirmed':False}
 
     @app.post('/api/documents/{doc_id}/local-reread')
     def local_reread(doc_id:str):
         with db() as c:
             d=document(c,doc_id);editable(d);quality=company(c,d['company_id']).get('ocr_quality','fast')
-            if d['engine']=='pdf-text':text=d['ocr_text'];engine='pdf-text';warning='';words=advanced.meta(c,doc_id).get('tokens',[])
-            else:
-                path=data/d['image'];text,engine,warning=ocr.recognize(path,quality=quality)
-                if engine in ('failed','unavailable'):fail(warning or 'פענוח מקומי אינו זמין',409)
-                words=vision.tokens(path,quality=quality);text,words,_=document_reading.refine(path,text,words,quality)
-            fields=extract(text,words,company(c,d['company_id'])['tax_id'])
-            sources={key:document_reading.original_region(d,region) for key,region in vision.field_sources(fields,words).items()}
-            result={'fields':fields,'field_sources':sources,'text':text,'engine':engine,'warning':warning,'checks':[],'items':[],'source_document_id':doc_id,'confirmed':False}
+            advanced.enrich(c,d)
+            fields={};sources={};texts=[];engines=[];warnings=[]
+            for page in d['pages']:
+                source=document(c,page['id'])
+                if source_store.link(c,source['source_id']):source_store.content(c,source['source_id'])
+                if source['engine']=='pdf-text':
+                    text=source['ocr_text'];engine='pdf-text';warning='';words=advanced.meta(c,source['id']).get('tokens',[])
+                else:
+                    path=image_path(c,source);text,engine,warning=ocr.recognize(path,quality=quality)
+                    if engine in ('failed','unavailable'):fail(warning or 'פענוח מקומי אינו זמין',409)
+                    words=vision.tokens(path,quality=quality);text,words,_=document_reading.refine(path,text,words,quality)
+                parsed=extract(text,words,company(c,d['company_id'])['tax_id'])
+                regions=vision.field_sources(parsed,words)
+                for key,value in parsed.items():
+                    if value and (not fields.get(key) or key in ('net','vat','total')):
+                        fields[key]=value
+                        if key in regions:sources[key]=document_reading.original_region(source,regions[key])
+                texts.append(text);engines.append(engine)
+                if warning:warnings.append(warning)
+            engine='+'.join(dict.fromkeys(engines));text='\n\n'.join(texts);warning='\n'.join(dict.fromkeys(warnings))
+            result={'fields':fields,'field_sources':sources,'text':text,'engine':engine,'warning':warning,'checks':[],'items':[],'source_document_id':doc_id,'confirmed':False,'pages':len(d['pages'])}
             run=uid();c.execute('INSERT INTO recognition_runs VALUES(?,?,?,?,?)',(run,doc_id,engine,encode(result),now()))
             return {**result,'id':run}
 
@@ -519,7 +559,12 @@ def create_app(data_dir=None):
         company(c, company_id)
         ids = payload.get('ids', [])
         if not isinstance(ids, list) or not 1 <= len(ids) <= 1000 or any(not isinstance(i, str) for i in ids) or len(set(ids)) != len(ids): fail('יש לבחור מסמכים ללא כפילויות')
-        return [document(c, i, company_id) for i in ids]
+        docs=[document(c,i,company_id) for i in ids]
+        source_ids={d['source_id'] for d in docs}
+        for d in docs:source_ids.update(r[0] for r in c.execute('SELECT d.source_id FROM documents d JOIN document_links l ON l.child_id=d.id WHERE l.primary_id=?',(d['id'],)))
+        for source_id in source_ids:
+            if source_store.link(c,source_id):source_store.content(c,source_id)
+        return docs
 
     @app.post('/api/companies/{company_id}/approve')
     def approve(company_id: str, payload: dict = Body(...)):
@@ -741,8 +786,10 @@ def create_app(data_dir=None):
             with db() as c:
                 with closing(sqlite3.connect(target)) as destination:
                     with closing(sqlite3.connect(database)) as source: source.backup(destination)
-                referenced = {r[0].replace('\\','/') for r in c.execute('SELECT path FROM sources')} | {r[0].replace('\\','/') for r in c.execute('SELECT image FROM documents')}
+                linked={r[0] for r in c.execute('SELECT source_id FROM source_links')}
+                referenced = {r['path'].replace('\\','/') for r in c.execute('SELECT id,path FROM sources') if r['id'] not in linked} | {r['image'].replace('\\','/') for r in c.execute('SELECT source_id,image FROM documents') if r['source_id'] not in linked}
                 for r in c.execute('SELECT source_id,page FROM documents'):
+                    if r[0] in linked:continue
                     referenced.add(f'files/{r[0]}/page-{r[1]}.png')
                 referenced.update(learning.backup_paths(c))
                 out = Path(temp.name) / 'backup.zip'
@@ -767,6 +814,8 @@ def create_app(data_dir=None):
     review_tools.register(app,locals())
     from . import document_lifecycle
     document_lifecycle.register(app,locals())
+    from . import linked_folders
+    linked_folders.register(app,locals())
     from . import updates
     updates.register(app,locals())
     return app
